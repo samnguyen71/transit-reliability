@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  logger-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: logger
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Lint
+        run: ruff check .
+      - name: Test
+        run: pytest -q
+
+  logger-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the Docker image
+        run: docker build -t feedlogger ./logger
+      - name: Check it starts
+        run: docker run --rm feedlogger --help

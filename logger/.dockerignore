@@ -1,0 +1,8 @@
+tests/
+data/
+config.toml
+.env
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/

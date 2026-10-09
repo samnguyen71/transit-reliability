@@ -1,0 +1,14 @@
+services:
+  logger:
+    build: ./logger
+    restart: unless-stopped  # comes back after crashes and VM reboots
+    env_file: .env  # API keys and Healthchecks URLs, used as ${NAME} in config.toml
+    volumes:
+      - ./data:/data  # snapshots end up in ./data/raw on the VM
+      - ./logger/config.toml:/config/config.toml:ro
+    stop_grace_period: 30s  # time to finish a download before stopping
+    logging:
+      driver: json-file
+      options:  # keep Docker's own log files from filling the disk
+        max-size: "10m"
+        max-file: "3"

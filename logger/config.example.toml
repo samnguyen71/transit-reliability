@@ -1,0 +1,46 @@
+# Copy this file to config.toml and edit the URLs. Commit config.toml: it
+# records which feeds you logged. API keys go in ../.env, never in here.
+#
+# Anywhere below, ${NAME} is replaced with the value of NAME from .env.
+
+# Where snapshots go. With Docker this is ./data/raw on the VM.
+data_dir = "/data/raw"
+
+# How the logger introduces itself to the agency's server. Add your repo URL
+# so they can see who's polling.
+user_agent = "transit-reliability-logger/0.1 (+https://github.com/YOUR-USERNAME/transit-reliability)"
+
+# Stop saving when free disk space drops below this many GB, so the VM
+# itself keeps working.
+min_free_gb = 2
+
+# One [[feeds]] section per URL. Most agencies publish trip updates and
+# vehicle positions at separate URLs; some put both in one feed, so you'd
+# list just one realtime feed.
+
+[[feeds]]
+name = "trip_updates"
+url = "https://AGENCY.example/gtfs-rt/TripUpdates"
+interval_seconds = 30  # check the agency's terms for a minimum
+# If the feed needs an API key, send it the way the agency's docs say. Either
+# as a header:
+#   headers = { "x-api-key" = "${TRANSIT_API_KEY}" }
+# or in the URL:
+#   url = "https://AGENCY.example/gtfs-rt/TripUpdates?api_key=${TRANSIT_API_KEY}"
+# Alerts if this feed stops (see README):
+#   healthcheck_url = "${HC_TRIP_UPDATES}"
+
+[[feeds]]
+name = "vehicle_positions"
+url = "https://AGENCY.example/gtfs-rt/VehiclePositions"
+interval_seconds = 30
+#   healthcheck_url = "${HC_VEHICLE_POSITIONS}"
+
+# The static GTFS zip. Agencies replace it when schedules change, and older
+# realtime data only makes sense next to the schedule that was running then,
+# so the logger keeps every version. Unchanged downloads aren't stored again.
+[[feeds]]
+name = "static_gtfs"
+kind = "static"
+url = "https://AGENCY.example/gtfs/google_transit.zip"
+interval_seconds = 21600  # every 6 hours

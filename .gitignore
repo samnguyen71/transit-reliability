@@ -1,0 +1,10 @@
+# Secrets and collected data never go in git.
+.env
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/

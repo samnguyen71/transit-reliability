@@ -1,0 +1,2 @@
+# Keep Unix line endings everywhere, so files edited on Windows still work on the VM.
+* text=auto eol=lf
