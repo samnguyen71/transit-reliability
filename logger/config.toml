@@ -10,7 +10,7 @@ data_dir = "/data/raw"
 user_agent = "transit-reliability-logger/0.1 (+https://github.com/samnguyen71/transit-reliability)"
 min_free_gb = 2
 
-# Polling every 30 s pins each arrival to within about half a minute, and
+# Polling every 30s pins each arrival to within about half a minute, and
 # on-time is judged in minutes.
 [[feeds]]
 name = "trip_updates"
