@@ -13,6 +13,7 @@ import statistics
 import time
 import zipfile
 from collections.abc import Mapping
+from datetime import datetime, timedelta
 
 import requests
 
@@ -84,10 +85,10 @@ def describe_realtime(
     entities = "entity" if h.entity_count == 1 else "entities"
     lines = [f"GTFS-realtime {h.version}, {mode}, {h.entity_count:,} {entities}"]
     if h.timestamp:
-        when = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(h.timestamp))
+        when = _local_and_utc(h.timestamp)
         if fetched_at is not None:
             age = fetched_at - h.timestamp
-            when += f" ({human_duration(age)} {'before' if age >= 0 else 'after'} this fetch)"
+            when += f", {human_duration(age)} {'before' if age >= 0 else 'after'} this fetch"
         lines.append(f"Feed timestamp: {when}")
     else:
         lines.append("Feed timestamp: missing (required since GTFS-realtime 2.0)")
@@ -151,10 +152,20 @@ def describe_realtime(
     lines += [
         "",
         f"Disk use at one fetch every {interval:g} s: about {human_bytes(per_day * 30)} "
-        f"per 30 days, {human_bytes(per_day * 90)} per 90 days (less if the feed often "
-        "doesn't change).",
+        f"per 30 days, {human_bytes(per_day * 90)} per 90 days, if every snapshot were this size.",
+        "Size follows how many vehicles are in service, so after a day of logging, "
+        "run report for the real rate.",
     ]
     return "\n".join(lines)
+
+
+def _local_and_utc(ts: float) -> str:
+    """'2026-10-08 23:40:31 local time (03:40:31 UTC)', or just UTC on a UTC machine."""
+    utc = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts))
+    local = datetime.fromtimestamp(ts).astimezone()
+    if local.utcoffset() == timedelta(0):
+        return utc
+    return f"{local:%Y-%m-%d %H:%M:%S} local time ({utc[11:]})"
 
 
 def _row(label: str, count: int, total: int) -> str:
@@ -164,12 +175,15 @@ def _row(label: str, count: int, total: int) -> str:
 def _notes(s: gtfsrt.Summary, fetched_at: float | None) -> list[str]:
     h = s.header
     notes = []
+    alerts_only = s.kinds["alert"] > 0 and not s.vehicles and not s.trip_updates
     if h.entity_count == 0:
         notes.append(
-            "The feed is empty right now. That's normal outside service hours; "
-            "try again during the day."
+            "The feed is empty right now. That's normal late at night, when few or no "
+            "vehicles are running; try again during the day."
         )
-    if fetched_at is not None and h.timestamp and fetched_at - h.timestamp > 300:
+    # An alerts feed can sit unchanged for hours, so an old timestamp is normal there.
+    stale = fetched_at is not None and h.timestamp and fetched_at - h.timestamp > 300
+    if stale and not alerts_only:
         notes.append(
             f"The feed timestamp is {human_duration(fetched_at - h.timestamp)} old, so the feed "
             "may be frozen. Check again in a few minutes."
@@ -179,10 +193,15 @@ def _notes(s: gtfsrt.Summary, fetched_at: float | None) -> list[str]:
             "This feed is DIFFERENTIAL: each snapshot holds only changes, so missing one "
             "loses data. Prefer a full-dataset feed if the agency has one."
         )
-    if h.entity_count and not s.vehicles and not s.trip_updates:
+    if alerts_only:
         notes.append(
-            "No trip updates or vehicle positions here, so this is probably an alerts feed. "
-            "Check whether the agency publishes the others at separate URLs."
+            "This is a service alerts feed (detours, cancellations). It's small, and alerts "
+            "can help explain delays and skipped stops later."
+        )
+    elif h.entity_count and not s.vehicles and not s.trip_updates:
+        notes.append(
+            "No trip updates or vehicle positions here. Check whether the agency publishes "
+            "them at separate URLs."
         )
     if s.vehicles:
         if s.vehicle_trip_id < 0.5 * s.vehicles:
@@ -212,6 +231,11 @@ def _notes(s: gtfsrt.Summary, fetched_at: float | None) -> list[str]:
                 "times, use the last prediction before each stop disappears, checked against "
                 "vehicle positions (Phase 1)."
             )
+    if s.trip_updates and not s.vehicles:
+        notes.append(
+            "No vehicle positions in this feed. Agencies usually publish them at a separate "
+            "URL, often ending in VehiclePositions: peek that one too."
+        )
     if s.stop_updates and s.stop_updates_delay_only > 0.5 * s.stop_updates:
         notes.append(
             "Most stop updates give only a delay, so you'll add it to the scheduled time "

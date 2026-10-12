@@ -227,7 +227,8 @@ def cmd_peek(args: argparse.Namespace) -> int:
             print(f"Couldn't fetch it: {redact(str(e), secrets)}")
             return 1
         fetched_at = time.time()
-        print(f"HTTP {status} {reason} in {seconds:.2f} s, {human_bytes(len(data))}\n")
+        status_text = f"HTTP {status} {reason}".rstrip()  # some servers send no reason
+        print(f"{status_text} in {seconds:.2f} s, {human_bytes(len(data))}\n")
         if status != 200:
             text = " ".join(data[:300].decode("utf-8", "replace").split())
             print(f"The server didn't send the feed. It said: {redact(text, secrets)}")

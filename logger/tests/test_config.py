@@ -118,6 +118,14 @@ class LoadConfigTest(unittest.TestCase):
         )
         self.assertEqual(config.data_dir, Path("/data/raw"))
 
+    def test_project_config_is_valid(self):
+        # Catches a typo in config.toml in CI, before it reaches the VM.
+        path = LOGGER_DIR / "config.toml"
+        if not path.exists():
+            self.skipTest("no config.toml yet")
+        config = load_config(path, {}, strict=False)
+        self.assertTrue(config.feeds)
+
 
 class HelpersTest(unittest.TestCase):
     def test_redact_hides_known_secrets_and_key_parameters(self):

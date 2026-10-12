@@ -1,8 +1,9 @@
 # Transit reliability planner
 
 How late do buses really run, and which trip gets you there on time? This
-project collects a transit agency's live GTFS-realtime feeds, measures actual
-delays against the schedule, and plans trips by their odds of arriving on time.
+project collects Durham Region Transit's live GTFS-realtime feeds, measures
+actual delays against the schedule, and plans trips by their odds of arriving
+on time.
 
 | Folder | What's in it |
 | --- | --- |

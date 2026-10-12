@@ -44,32 +44,36 @@ You need Python 3.11 or newer. From the `logger` folder:
 python -m venv .venv
 source .venv/bin/activate           # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp config.example.toml config.toml  # Windows: copy config.example.toml config.toml
-cp ../.env.example ../.env          # only needed if the feeds need an API key
 ```
 
-Put your agency's feed URLs in `config.toml` (find them on the agency's
-developer page or the [Mobility Database](https://mobilitydatabase.org)), and
-the API key, if there is one, in `../.env`. Then:
+`config.toml` is set up for Durham Region Transit, whose feeds need no API
+key. Put your repo's URL in its `user_agent` line. For another agency, start
+from `config.example.toml`, which shows every option, and find the feed URLs
+on the agency's developer page or the
+[Mobility Database](https://mobilitydatabase.org). Then:
 
 ```bash
-python -m feedlogger peek trip_updates                  # what's in the feed?
+python -m feedlogger peek vehicle_positions             # what's in the feed?
 python -m feedlogger run --once --data-dir ./data/raw   # fetch each feed once
 ```
 
 ## 2. Choose the agency with `peek`
 
 `peek` fetches a feed once, stores nothing, and describes it. Give it a feed
-name from `config.toml`, any URL, or a saved snapshot file. Look for:
+name from `config.toml`, any URL, or a saved snapshot file. Peek every feed
+you plan to log, while buses are running: daytime is best, since late at night
+many feeds are nearly empty. Look for:
 
 - **HTTP 200** and "GTFS-realtime 2.0, full dataset".
 - **Trip IDs on nearly everything.** Without them, matching to the schedule is hard.
 - **A fresh feed timestamp:** seconds old, not minutes.
 - **The notes at the end.** Whether passed stops stay in the feed decides how
   Phase 1 finds actual arrival times.
-- **The disk estimate**, compared with your VM's disk.
+- **The disk estimate**, compared with your VM's disk. It assumes every
+  snapshot is the size of this one, so a late-evening peek underestimates.
 
-Run it during service hours: at 3 a.m. many feeds are empty.
+Times are shown in your local time, with UTC alongside. The logger itself
+works in UTC.
 
 ## 3. Run it on the VM
 
@@ -95,10 +99,11 @@ Run it during service hours: at 3 a.m. many feeds are empty.
    folder up with `scp -r` instead.
 
 4. **Configure and start.** Commit `logger/config.toml`, since it records
-   which feeds you logged. The key goes in `.env`, which is never committed.
+   which feeds you logged. Secrets (API keys, Healthchecks URLs) go in `.env`,
+   which is never committed.
 
    ```bash
-   cp .env.example .env && nano .env   # API key, and Healthchecks URLs later
+   cp .env.example .env                # for Healthchecks URLs later
    mkdir -p data                       # create this before the first start
    docker compose run --rm logger run --once
    docker compose up -d --build
