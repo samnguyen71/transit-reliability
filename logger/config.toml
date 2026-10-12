@@ -16,13 +16,13 @@ min_free_gb = 2
 name = "trip_updates"
 url = "https://drtonline.durhamregiontransit.com/gtfsrealtime/TripUpdates"
 interval_seconds = 30
-# healthcheck_url = "${HC_TRIP_UPDATES}"
+healthcheck_url = "${HC_TRIP_UPDATES}"
 
 [[feeds]]
 name = "vehicle_positions"
 url = "https://drtonline.durhamregiontransit.com/gtfsrealtime/VehiclePositions"
 interval_seconds = 30
-# healthcheck_url = "${HC_VEHICLE_POSITIONS}"
+healthcheck_url = "${HC_VEHICLE_POSITIONS}"
 
 # Service alerts: detours and cancellations, which can explain skipped stops.
 # Small, and unchanged snapshots aren't stored again.
