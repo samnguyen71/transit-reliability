@@ -2,10 +2,16 @@ import argparse
 import csv
 import hashlib
 import os
+import re
 import sys
 import zipfile
+from datetime import datetime, timezone
+
 import psycopg
 from psycopg import sql
+
+# Logger file names: 20261008T210430Z.zip, or 20261008T210430Z_1.zip
+STAMP_RE = re.compile(r"^(\d{8}T\d{6}Z)(?:_\d+)?\.zip$")
 
 # Target table schema configurations and expected columns
 EXPECTED = {
@@ -104,6 +110,7 @@ EXPECTED = {
 
 # Foreign-key dependency execution order
 FILE_ORDER = [
+    "agency.txt",
     "calendar.txt",
     "calendar_dates.txt",
     "routes.txt",
@@ -121,11 +128,11 @@ INSERT_STATEMENTS = {
         )
         SELECT
             %(feed)s,
-            NULLIF(agency_id, ''),
+            COALESCE(agency_id, ''),
             agency_name,
             agency_url,
             agency_timezone
-        FROM stg;
+        FROM {stg};
     """),
 
     "stops.txt": sql.SQL("""
@@ -140,7 +147,7 @@ INSERT_STATEMENTS = {
             stop_lat::real,
             stop_lon::real,
             NULLIF(parent_station, '')
-        FROM stg;
+        FROM {stg};
     """),
 
     "routes.txt": sql.SQL("""
@@ -155,7 +162,7 @@ INSERT_STATEMENTS = {
             NULLIF(route_short_name, ''),
             NULLIF(route_long_name, ''),
             route_type::int
-        FROM stg;
+        FROM {stg};
     """),
 
     "trips.txt": sql.SQL("""
@@ -171,13 +178,14 @@ INSERT_STATEMENTS = {
             NULLIF(direction_id, '')::smallint,
             NULLIF(block_id, ''),
             NULLIF(shape_id, '')
-        FROM stg;
+        FROM {stg};
     """),
 
     "stop_times.txt": sql.SQL("""
         INSERT INTO gtfs.stop_times (
             feed_id, trip_id, stop_sequence, stop_id,
-            arrival_secs, departure_secs, timepoint
+            arrival_secs, departure_secs, timepoint,
+            pickup_type, drop_off_type
         )
         SELECT
             %(feed)s,
@@ -186,8 +194,10 @@ INSERT_STATEMENTS = {
             stop_id,
             gtfs.parse_secs(arrival_time),
             gtfs.parse_secs(departure_time),
-            NULLIF(timepoint, '')::smallint
-        FROM stg;
+            NULLIF(timepoint, '')::smallint,
+            NULLIF(pickup_type, '')::int,
+            NULLIF(drop_off_type, '')::int
+        FROM {stg};
     """),
 
     "calendar.txt": sql.SQL("""
@@ -209,7 +219,7 @@ INSERT_STATEMENTS = {
             sunday::boolean,
             to_date(start_date, 'YYYYMMDD'),
             to_date(end_date, 'YYYYMMDD')
-        FROM stg;
+        FROM {stg};
     """),
 
     "calendar_dates.txt": sql.SQL("""
@@ -221,7 +231,7 @@ INSERT_STATEMENTS = {
             service_id,
             to_date(date, 'YYYYMMDD'),
             exception_type::smallint
-        FROM stg;
+        FROM {stg};
     """),
 }
 
@@ -287,24 +297,67 @@ def process_gtfs_file(cur: psycopg.Cursor, zf: zipfile.ZipFile, name: str, feed_
     # Drop temporary staging table to free backend resource for next file
     cur.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(stg))
 
+def fetched_at_from_name(zip_path: str) -> datetime:
+    """The logger names zips by UTC fetch time: 20261008T210430Z.zip (or ..._1.zip).
+    Falls back to the file's modification time for zips from elsewhere."""
+    m = STAMP_RE.match(os.path.basename(zip_path))
+    if m:
+        return datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    print(f"  (no timestamp in '{zip_path}' name; using its modification time)")
+    return datetime.fromtimestamp(os.path.getmtime(zip_path), tz=timezone.utc)
+
+# Sanity check: count scheduled stop visits on one ordinary (no calendar_dates
+# exception) day of the given ISO weekday. Raises, rolling back the load, when the
+# count is zero or differs from the expected one.
+def check_visits(cur: psycopg.Cursor, feed_id: int, isodow: int, label: str, expected: int | None):
+    cur.execute(
+        """
+        SELECT d::date FROM generate_series(
+            (SELECT min(start_date) FROM gtfs.calendar WHERE feed_id = %(feed)s),
+            (SELECT max(end_date)   FROM gtfs.calendar WHERE feed_id = %(feed)s),
+            interval '1 day') d
+        WHERE extract(isodow FROM d) = %(dow)s
+          AND NOT EXISTS (SELECT 1 FROM gtfs.calendar_dates cd
+                          WHERE cd.feed_id = %(feed)s AND cd.date = d::date)
+        ORDER BY d LIMIT 1
+        """,
+        {"feed": feed_id, "dow": isodow},
+    )
+    row = cur.fetchone()
+    if not row:
+        print(f"  !! no ordinary {label} in calendar.txt; skipping its visit check")
+        return
+    day = row[0]
+    cur.execute("SELECT count(*) FROM gtfs.scheduled_stop_visits(%s, %s)", (feed_id, day))
+    count = cur.fetchone()[0]
+    print(f"  {label} {day}: {count:,} scheduled stop visits")
+    if count == 0:
+        raise ValueError(f"no scheduled stop visits on {label} {day}")
+    if expected is not None and count != expected:
+        raise ValueError(f"{label} {day} has {count:,} stop visits, expected {expected:,}")
+
 # Process a single GTFS zip archive inside a dedicated transaction block
-def load_zip(conn: psycopg.Connection, zip_path: str):
+def load_zip(conn: psycopg.Connection, zip_path: str,
+             expect_weekday: int | None = None, expect_weekend: int | None = None):
     sha256 = calculate_sha256(zip_path)
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         tz = read_agency_timezone(zf)
+        if not tz:
+            raise ValueError("agency.txt is missing or has no agency_timezone")
+        fetched_at = fetched_at_from_name(zip_path)
 
         # Transaction boundary: All inserts roll back if an exception occurs
         with conn.transaction():
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO gtfs.feed (sha256, agency_timezone, loaded_at)
-                    VALUES (%s, %s, NOW())
+                    INSERT INTO gtfs.feed (sha256, zip_path, fetched_at, timezone)
+                    VALUES (%s, %s, %s, %s)
                     ON CONFLICT (sha256) DO NOTHING
                     RETURNING feed_id;
                     """,
-                    (sha256, tz),
+                    (sha256, os.path.abspath(zip_path), fetched_at, tz),
                 )
                 row = cur.fetchone()
                 
@@ -321,9 +374,16 @@ def load_zip(conn: psycopg.Connection, zip_path: str):
                         print(f"  -> Ingesting {filename}...")
                         process_gtfs_file(cur, zf, filename, feed_id)
 
+                check_visits(cur, feed_id, 3, "Wednesday", expect_weekday)
+                check_visits(cur, feed_id, 6, "Saturday", expect_weekend)
+
 def main():
     parser = argparse.ArgumentParser(description="Load GTFS ZIP archives into PostgreSQL.")
     parser.add_argument("zip_files", nargs="+", help="Paths to GTFS .zip files")
+    parser.add_argument("--expect-weekday", type=int, metavar="N",
+                        help="fail unless an ordinary Wednesday has exactly N stop visits")
+    parser.add_argument("--expect-weekend", type=int, metavar="N",
+                        help="fail unless an ordinary Saturday has exactly N stop visits")
     args = parser.parse_args()
 
     conn_string = os.getenv("DATABASE_URL")
@@ -332,12 +392,18 @@ def main():
         sys.exit(1)
 
     # psycopg3 defaults to explicit transactions (autocommit=False)
+    failures = 0
     with psycopg.connect(conn_string) as conn:
         for zip_path in args.zip_files:
             try:
-                load_zip(conn, zip_path)
+                load_zip(conn, zip_path, args.expect_weekday, args.expect_weekend)
             except Exception as err:
+                failures += 1
                 print(f"Failed to load '{zip_path}'. Transaction rolled back. Error: {err}", file=sys.stderr)
+
+    if failures:
+        print(f"{failures} of {len(args.zip_files)} zip(s) failed.", file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

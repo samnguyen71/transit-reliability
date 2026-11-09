@@ -1,10 +1,10 @@
-CREATE FUNCTION gtfs.service_time(service_date date, secs int, tz text)
+CREATE OR REPLACE FUNCTION gtfs.service_time(service_date date, secs int, tz text)
 RETURNS timestamptz LANGUAGE sql STABLE AS $$
   SELECT ((service_date + time '12:00') AT TIME ZONE tz)
          - interval '12 hours' + secs * interval '1 second'
 $$;
 
-CREATE FUNCTION gtfs.active_services(p_feed int, p_date date)
+CREATE OR REPLACE FUNCTION gtfs.active_services(p_feed int, p_date date)
 RETURNS TABLE (service_id text) LANGUAGE sql STABLE AS $$
   (SELECT c.service_id FROM gtfs.calendar c
     WHERE c.feed_id = p_feed
@@ -19,7 +19,7 @@ RETURNS TABLE (service_id text) LANGUAGE sql STABLE AS $$
    WHERE d.feed_id = p_feed AND d.date = p_date AND d.exception_type = 1
 $$;
 
-CREATE FUNCTION gtfs.scheduled_stop_visits(p_feed int, p_service_date date)
+CREATE OR REPLACE FUNCTION gtfs.scheduled_stop_visits(p_feed int, p_service_date date)
 RETURNS TABLE (
     service_date date,
     trip_id text,
@@ -63,7 +63,7 @@ JOIN gtfs.feed f
   ON f.feed_id = p_feed;
 $$;
 
-CREATE FUNCTION gtfs.parse_secs(val text)
+CREATE OR REPLACE FUNCTION gtfs.parse_secs(val text)
 RETURNS integer AS $$
 SELECT CASE 
     WHEN val IS NULL OR val = '' THEN NULL
