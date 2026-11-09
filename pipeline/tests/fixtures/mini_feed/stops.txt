@@ -1,0 +1,4 @@
+stop_id,stop_name,stop_lat,stop_lon
+A,Alpha,43.8971,-78.8658
+B,Bravo,43.9001,-78.8501
+C,Charlie,43.9102,-78.8402

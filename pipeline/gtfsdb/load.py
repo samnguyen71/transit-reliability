@@ -5,7 +5,7 @@ import os
 import re
 import sys
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import psycopg
 from psycopg import sql
@@ -144,8 +144,8 @@ INSERT_STATEMENTS = {
             %(feed)s,
             stop_id,
             stop_name,
-            stop_lat::real,
-            stop_lon::real,
+            stop_lat::double precision,
+            stop_lon::double precision,
             NULLIF(parent_station, '')
         FROM {stg};
     """),
@@ -302,9 +302,9 @@ def fetched_at_from_name(zip_path: str) -> datetime:
     Falls back to the file's modification time for zips from elsewhere."""
     m = STAMP_RE.match(os.path.basename(zip_path))
     if m:
-        return datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        return datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
     print(f"  (no timestamp in '{zip_path}' name; using its modification time)")
-    return datetime.fromtimestamp(os.path.getmtime(zip_path), tz=timezone.utc)
+    return datetime.fromtimestamp(os.path.getmtime(zip_path), tz=UTC)
 
 # Sanity check: count scheduled stop visits on one ordinary (no calendar_dates
 # exception) day of the given ISO weekday. Raises, rolling back the load, when the
