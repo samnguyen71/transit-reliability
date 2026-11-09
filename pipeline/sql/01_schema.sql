@@ -40,25 +40,28 @@ CREATE TABLE gtfs.calendar_dates (
   PRIMARY KEY (feed_id, service_id, date)
 );
 
-CREATE TABLE agency (
-    agency_id text, agency_name text NOT NULL, agency_url text NOT NULL,
-    agency_timezone text NOT NULL,
-    PRIMARY KEY (feed_id, agency_id)
+CREATE TABLE gtfs.agency (
+  feed_id int REFERENCES gtfs.feed ON DELETE CASCADE, agency_id text, agency_name text NOT NULL, 
+  agency_url text NOT NULL, agency_timezone text NOT NULL,
+  PRIMARY KEY (feed_id, agency_id)
 );
 
-CREATE TABLE routes (
-    route_id text NOT NULL, agency_id text,
-    route_short_name text, route_long_name text, route_type int NOT NULL,
-    PRIMARY KEY (feed_id, route_id)
+CREATE TABLE gtfs.routes (
+  feed_id int REFERENCES gtfs.feed ON DELETE CASCADE, route_id text NOT NULL, agency_id text,
+  route_short_name text, route_long_name text, route_type int NOT NULL,
+  PRIMARY KEY (feed_id, route_id)
 );
 
-CREATE TABLE stop (
-  stop_id text, stop_name text NOT NULL,
+CREATE TABLE gtfs.stops (
+  feed_id int REFERENCES gtfs.feed ON DELETE CASCADE, stop_id text, stop_name text NOT NULL,
   stop_lat real NOT NULL, stop_lon real NOT NULL,
   parent_station text,
-  PRIMARY KEY (feed_id, stop_id)
-  FOREIGN KEY (stop_id) REFERENCES gtfs.stop_times ON DELETE CASCADE
-)
+  PRIMARY KEY (feed_id, stop_id),
+  CONSTRAINT fk_stop_times_stops
+    FOREIGN KEY (feed_id, stop_id)
+    REFERENCES gtfs.stops (feed_id, stop_id)
+    ON DELETE CASCADE
+);
 
 CREATE INDEX ON gtfs.trips (feed_id, service_id);      -- date → trips
 CREATE INDEX ON gtfs.calendar_dates (feed_id, date);   -- exceptions on a date

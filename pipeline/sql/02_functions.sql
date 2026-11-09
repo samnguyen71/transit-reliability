@@ -62,3 +62,13 @@ JOIN gtfs.stop_times st
 JOIN gtfs.feed f
   ON f.feed_id = p_feed;
 $$;
+
+CREATE FUNCTION gtfs.parse_secs(val text)
+RETURNS integer AS $$
+SELECT CASE 
+    WHEN val IS NULL OR val = '' THEN NULL
+    ELSE (split_part(val, ':', 1)::integer * 3600) + 
+         (split_part(val, ':', 2)::integer * 60) + 
+         (split_part(val, ':', 3)::integer)
+END;
+$$ LANGUAGE sql IMMUTABLE;
