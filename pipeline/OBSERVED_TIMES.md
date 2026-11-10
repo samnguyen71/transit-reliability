@@ -67,8 +67,12 @@ From the reports that count:
 ## Arrival at the last stop
 
 TripUpdates can't be used here: trips leave the feed a median 196 s before their last
-stop's time. Use the first strict `STOPPED_AT` report at the last stop
-(`source = vp`, bracket kept). Without one, the status is `lost`.
+stop's time. `STOPPED_AT` the last stop shows up for only 39.4% of trips, so status
+alone isn't enough.
+
+**Pending:** the GPS check under Open. If it works, the rule is: the first report by the
+trip's vehicle within 100 m of the last stop, under any trip_id (`source = vp_position`,
+bracket = the previous report to this one). Without one, the status is `lost`.
 
 ## Status of each scheduled visit
 
@@ -112,6 +116,12 @@ not in any loaded static version, go to `unscheduled_trips` and aren't scored.
 - **Vehicle data quirks:** 430 vehicle reports had timestamp 0; 925 stop_sequence
   backwards jumps; one vehicle still in the feed 4.5 h after its last report.
 
+- **When a bus passes without stopping and the sources disagree, VP is right.** Against
+  the whole bracket, 83.1% agree. In the 15.6% where TU is more than 60 s before VP's last
+  "not yet there" report, the bus's GPS position at that report shows it had not
+  reached the stop in 97.8% of cases (7,745); VP lagged in only 1.4%. DRT's TripUpdates
+  sometimes marks a stop it doesn't serve as passed early. Hence step 2 of the
+  departure rule: on disagreement, VP's bracket wins.
 - **TU's departure field is not used.** Among passed stops it differs from the arrival
   field 32,148 times. Even then it's a departure, but a less accurate one: at stopped
   stops it matches the VP departure within 60 s for 86.9% (non-timepoints) and 75.2%
@@ -125,10 +135,12 @@ not in any loaded static version, go to `unscheduled_trips` and aren't scored.
   as it pulls in. `feed_profile.py` now follows the vehicle to the last stop's
   `stop_id` under any `trip_id`, within 30 min. If that recovers most of them, the
   last-stop rule follows the vehicle rather than the trip.
-- **Passed without stopping, TU early.** Checked against the whole bracket, 83.1% agree
-  and 15.6% of TU times are more than 60 s before VP's last "not yet there" report.
-  `feed_profile.py` now uses the bus's GPS position at that report to tell whether VP's
-  stop_sequence lagged (TU right) or TU recorded the stop early (VP right). That decides
-  which source wins when they disagree.
+- **Last-stop arrivals, second try.** Following the vehicle by status recovered only 10 of
+  about 1,580; the bus doesn't report `STOPPED_AT` that `stop_id` under any trip_id. A
+  likely reason: terminals use separate arrival and departure stop IDs.
+  `feed_profile.py` now looks for the vehicle's first report within 100 m of the last
+  stop's coordinates, under any trip_id. If that finds most of them, the last-stop
+  arrival is defined by position. If not, last-stop arrivals drop out of v1 scoring and
+  are reported only as coverage.
 - **Re-measure each new timetable version,** and when the disagreement report exists,
   record its weekly numbers here.

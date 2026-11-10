@@ -25,6 +25,7 @@ from google.transit import gtfs_realtime_pb2 as pb
 GAP_S = 90        # more than this between fresh snapshots is a gap: don't compare across it
 PAST_S = 60       # a stop time this far behind the snapshot's timestamp is in the past
 TOLERANCE_S = 60  # a TU arrival within the VP bracket +/- this agrees with it
+NEAR_M = 100      # a vehicle this close to a stop's coordinates is at the stop
 
 TRIP_REL = {v.number: v.name for v in pb.TripDescriptor.ScheduleRelationship.DESCRIPTOR.values}
 STOP_REL = {
@@ -208,7 +209,7 @@ def profile_vehicles(folder: str):
     extra = {
         "pos": {},                                        # (trip key, time) -> (lat, lon)
         "trip_vehicles": defaultdict(Counter),            # trip key -> Counter(vehicle id)
-        "by_vehicle": defaultdict(list),  # vehicle -> [(time, trip key, seq, stop_id, status)]
+        "by_vehicle": defaultdict(list),  # vehicle -> [(time, key, seq, stop_id, status, pos)]
     }
     for h, feed in fresh_snapshots(folder, counts):
         for e in feed.entity:
@@ -245,7 +246,9 @@ def profile_vehicles(folder: str):
                     stream = extra["by_vehicle"][vid]
                     if not stream or stream[-1][0] != ts:
                         stop_id = v.stop_id if v.HasField("stop_id") else None
-                        stream.append((ts, key, v.current_stop_sequence, stop_id, st))
+                        where = ((v.position.latitude, v.position.longitude)
+                                 if v.HasField("position") else None)
+                        stream.append((ts, key, v.current_stop_sequence, stop_id, st, where))
     return counts, c, status, lag, by_trip, extra
 
 
@@ -367,6 +370,8 @@ def last_stop_coverage(by_trip, static, extra):
     c: Counter = Counter()
     found: Counter = Counter()
     waits = []  # seconds from the trip's last own report to the recovered STOPPED_AT
+    by_pos: Counter = Counter()
+    near_waits = []  # seconds from the trip's last own report to the first report near the stop
     for key, reports in by_trip.items():
         last = static["last_seq"].get(key[0])
         if last is None:
@@ -385,15 +390,23 @@ def last_stop_coverage(by_trip, static, extra):
             continue
         vid = vehicles.most_common(1)[0][0]
         t_end = reports[-1][0]
-        hit = None
-        for ts, other, _, stop_id, st in extra["by_vehicle"][vid]:
-            if ts < t_end - 120:
+        hit = near = None
+        coords = static["coords"].get(last_stop)
+        for ts, other, _, stop_id, st, p in extra["by_vehicle"][vid]:
+            if ts < t_end - 600:
                 continue
             if ts > t_end + 1800:
                 break
-            if stop_id == last_stop and st == "STOPPED_AT":
+            if hit is None and stop_id == last_stop and st == "STOPPED_AT" and ts >= t_end - 120:
                 hit = (ts, other)
-                break
+            if near is None and coords and p and metres(p, coords) <= NEAR_M:
+                near = (ts, other)
+        if near is None:
+            by_pos[f"{kind}: no report within {NEAR_M} m"] += 1
+        else:
+            by_pos[f"{kind}: within {NEAR_M} m, "
+                   + ("same trip_id" if near[1] == key else "under another trip_id")] += 1
+            near_waits.append(near[0] - t_end)
         if hit is None:
             found[f"{kind}: not found"] += 1
         elif hit[1] == key:
@@ -401,7 +414,7 @@ def last_stop_coverage(by_trip, static, extra):
         else:
             found[f"{kind}: found under another trip_id"] += 1
             waits.append(hit[0] - t_end)
-    return c, found, waits
+    return c, found, waits, by_pos, near_waits
 
 
 def cross_check(drops, by_trip, first_seq, static=None, extra=None):
@@ -519,13 +532,18 @@ def main() -> None:
 
     static = load_static(sys.argv[3]) if len(sys.argv) > 3 else None
     if static is not None:
-        lc, found, waits = last_stop_coverage(by_trip, static, extra)
+        lc, found, waits, by_pos, near_waits = last_stop_coverage(by_trip, static, extra)
         print("  trips by how their vehicle reports end: "
               + ", ".join(f"{k} {pct(n, sum(lc.values()))}" for k, n in lc.most_common()))
         print("  following the vehicle to the last stop_id (STOPPED_AT within 30 min):")
         for k, n in sorted(found.items()):
             print(f"    {k}: {n}")
         print(f"    seconds from the trip's last own report to that STOPPED_AT: {dist(waits)}")
+        print(f"  following the vehicle by GPS: first report within {NEAR_M} m of the last stop"
+              " (from 10 min before the trip's last own report to 30 min after):")
+        for k, n in sorted(by_pos.items()):
+            print(f"    {k}: {n}")
+        print(f"    seconds from the trip's last own report to that report: {dist(near_waits)}")
     x, diffs, groups, strict, where = cross_check(drops, by_trip, first_seq, static, extra)
     print("\nDropped stops checked against VehiclePositions")
     print("  " + ", ".join(f"{k} {n}" for k, n in x.items()))
