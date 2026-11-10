@@ -205,6 +205,11 @@ def profile_vehicles(folder: str):
     status: Counter = Counter()
     lag = []
     by_trip: dict = defaultdict(list)  # (trip_id, start_date) -> [(time, seq, status)]
+    extra = {
+        "pos": {},                                        # (trip key, time) -> (lat, lon)
+        "trip_vehicles": defaultdict(Counter),            # trip key -> Counter(vehicle id)
+        "by_vehicle": defaultdict(list),  # vehicle -> [(time, trip key, seq, stop_id, status)]
+    }
     for h, feed in fresh_snapshots(folder, counts):
         for e in feed.entity:
             if not e.HasField("vehicle"):
@@ -224,14 +229,24 @@ def profile_vehicles(folder: str):
             if v.HasField("timestamp"):
                 lag.append(h - v.timestamp)
             if has_trip and v.HasField("current_stop_sequence"):
-                reports = by_trip[(v.trip.trip_id, v.trip.start_date)]
+                key = (v.trip.trip_id, v.trip.start_date)
+                reports = by_trip[key]
                 if reports and reports[-1][0] == ts:
                     c["report not newer than the last one"] += 1
                     continue
                 if reports and v.current_stop_sequence < reports[-1][1]:
                     c["stop_sequence went backwards"] += 1
                 reports.append((ts, v.current_stop_sequence, st))
-    return counts, c, status, lag, by_trip
+                if v.HasField("position"):
+                    extra["pos"][(key, ts)] = (v.position.latitude, v.position.longitude)
+                vid = v.vehicle.id if v.HasField("vehicle") else ""
+                if vid:
+                    extra["trip_vehicles"][key][vid] += 1
+                    stream = extra["by_vehicle"][vid]
+                    if not stream or stream[-1][0] != ts:
+                        stop_id = v.stop_id if v.HasField("stop_id") else None
+                        stream.append((ts, key, v.current_stop_sequence, stop_id, st))
+    return counts, c, status, lag, by_trip, extra
 
 
 def bracket(reports, s, robust):
@@ -288,44 +303,115 @@ def departed(reports, floor, s, after_ts):
     return None
 
 
-def load_timepoints(zip_path: str) -> dict:
+def load_static(zip_path: str) -> dict:
     import csv
     import io
     import zipfile
 
-    timepoints, last_seq = {}, {}
+    st = {"timepoints": {}, "last_seq": {}, "stop_of": {}, "next_seq": {}, "coords": {}}
+    seqs: dict = defaultdict(list)
     with zipfile.ZipFile(zip_path) as zf:
         rows = csv.DictReader(io.TextIOWrapper(zf.open("stop_times.txt"), "utf-8-sig"))
         for r in rows:
             seq = int(r["stop_sequence"])
-            timepoints[(r["trip_id"], seq)] = r.get("timepoint") == "1"
-            last_seq[r["trip_id"]] = max(last_seq.get(r["trip_id"], seq), seq)
-    return timepoints, last_seq
+            st["timepoints"][(r["trip_id"], seq)] = r.get("timepoint") == "1"
+            st["stop_of"][(r["trip_id"], seq)] = r["stop_id"]
+            seqs[r["trip_id"]].append(seq)
+        if "stops.txt" in zf.namelist():
+            rows = csv.DictReader(io.TextIOWrapper(zf.open("stops.txt"), "utf-8-sig"))
+            for r in rows:
+                st["coords"][r["stop_id"]] = (float(r["stop_lat"]), float(r["stop_lon"]))
+    for trip_id, ss in seqs.items():
+        ss.sort()
+        st["last_seq"][trip_id] = ss[-1]
+        for a, b in zip(ss, ss[1:]):
+            st["next_seq"][(trip_id, a)] = b
+    return st
 
 
-def last_stop_coverage(by_trip, last_seq) -> Counter:
-    """How each trip's vehicle reports end, relative to the trip's last scheduled stop."""
+def metres(a: tuple[float, float], b: tuple[float, float]) -> float:
+    import math
+
+    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
+    h = (math.sin((lat2 - lat1) / 2) ** 2
+         + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2)
+    return 12_742_000 * math.asin(math.sqrt(h))
+
+
+def where_was_the_bus(static, pos, key, s, ts) -> str:
+    """At VP report time ts (which said the bus hadn't reached s yet), where was it really?
+
+    Straight-line test against stop s and the next stop: rough, but enough to tell
+    "VP's stop_sequence lagged" from "TU recorded the stop early".
+    """
+    p = pos.get((key, ts))
+    nxt = static["next_seq"].get((key[0], s))
+    here = static["coords"].get(static["stop_of"].get((key[0], s)))
+    there = static["coords"].get(static["stop_of"].get((key[0], nxt))) if nxt else None
+    if p is None or here is None or there is None:
+        return "no position or stop coordinates"
+    d_here, d_there, seg = metres(p, here), metres(p, there), metres(here, there)
+    if d_here <= 75:
+        return "within 75 m of the stop"
+    if d_here + d_there <= 1.2 * seg + 50:
+        return "already between the stop and the next (VP lagging)"
+    return "not yet at the stop (TU early)"
+
+
+def last_stop_coverage(by_trip, static, extra):
+    """How each trip's vehicle reports end, relative to the trip's last scheduled stop.
+
+    For trips without STOPPED_AT at the last stop under their own trip_id, follow the
+    vehicle: is it STOPPED_AT that stop_id within 30 min, under another trip_id?
+    """
     c: Counter = Counter()
-    for (trip_id, _), reports in by_trip.items():
-        last = last_seq.get(trip_id)
+    found: Counter = Counter()
+    waits = []  # seconds from the trip's last own report to the recovered STOPPED_AT
+    for key, reports in by_trip.items():
+        last = static["last_seq"].get(key[0])
         if last is None:
             c["trip not in the static zip"] += 1
-        elif any(seq == last and st == "STOPPED_AT" for _, seq, st in reports):
+            continue
+        if any(seq == last and st == "STOPPED_AT" for _, seq, st in reports):
             c["STOPPED_AT the last stop"] += 1
-        elif any(seq == last for _, seq, _ in reports):
-            c["heading to the last stop, never STOPPED_AT it"] += 1
+            continue
+        kind = ("heading to the last stop, never STOPPED_AT it"
+                if any(seq == last for _, seq, _ in reports) else "reports end before the last stop")
+        c[kind] += 1
+        vehicles = extra["trip_vehicles"].get(key)
+        last_stop = static["stop_of"].get((key[0], last))
+        if not vehicles or last_stop is None:
+            found[f"{kind}: no vehicle id"] += 1
+            continue
+        vid = vehicles.most_common(1)[0][0]
+        t_end = reports[-1][0]
+        hit = None
+        for ts, other, _, stop_id, st in extra["by_vehicle"][vid]:
+            if ts < t_end - 120:
+                continue
+            if ts > t_end + 1800:
+                break
+            if stop_id == last_stop and st == "STOPPED_AT":
+                hit = (ts, other)
+                break
+        if hit is None:
+            found[f"{kind}: not found"] += 1
+        elif hit[1] == key:
+            found[f"{kind}: found, same trip_id"] += 1
         else:
-            c["reports end before the last stop"] += 1
-    return c
+            found[f"{kind}: found under another trip_id"] += 1
+            waits.append(hit[0] - t_end)
+    return c, found, waits
 
 
-def cross_check(drops, by_trip, first_seq, timepoints=None):
+def cross_check(drops, by_trip, first_seq, static=None, extra=None):
     """For each stop that dropped out of TripUpdates, bracket its arrival with VehiclePositions."""
     c: Counter = Counter()
     diffs = []
     groups: dict = defaultdict(Counter)  # breakdown label -> Counter(size bucket)
     strict: dict = defaultdict(Counter)  # same, strict brackets only, arrival vs departure
     floor_cache: dict = {}
+    where: Counter = Counter()  # TU-early cases: bus position at VP's 'not yet' report
     for key, s, pred, h_last, tu_dep in drops:
         reports = by_trip.get(key)
         if not reports:
@@ -358,8 +444,8 @@ def cross_check(drops, by_trip, first_seq, timepoints=None):
         if key not in floor_cache:
             floor_cache[key] = floors(reports)
         kind = "stopped" if rb[2] == "STOPPED_AT the stop" else "passed without stopping"
-        if kind == "stopped" and timepoints is not None:
-            tp = timepoints.get((key[0], s))
+        if kind == "stopped" and static is not None:
+            tp = static["timepoints"].get((key[0], s))
             kind += ", timepoint" if tp else ", not a timepoint" if tp is not None else ", ?"
         strict[f"vs VP arrival   | {kind}"][size(pred - rb[1])] += 1
         dep = departed(reports, floor_cache[key], s, rb[1])
@@ -371,12 +457,14 @@ def cross_check(drops, by_trip, first_seq, timepoints=None):
             inside = lo - TOLERANCE_S <= pred <= rb[1] + TOLERANCE_S
             strict["passed without stopping: TU inside bracket"][
                 "within 60s" if inside else size(pred - rb[1])] += 1
+            if not inside and pred < lo - TOLERANCE_S and static is not None and rb[0] is not None:
+                where[where_was_the_bus(static, extra["pos"], key, s, rb[0])] += 1
         if tu_dep is not None and tu_dep != pred:
             c["TU departure differs from TU arrival"] += 1
             strict[f"TU departure FIELD vs VP arrival   | {kind}"][size(tu_dep - rb[1])] += 1
             if dep is not None:
                 strict[f"TU departure FIELD vs VP departure | {kind}"][size(tu_dep - dep)] += 1
-    return c, diffs, groups, strict
+    return c, diffs, groups, strict, where
 
 
 def main() -> None:
@@ -410,7 +498,7 @@ def main() -> None:
     print(f"    last stop's time minus the last snapshot that had the trip (s): {dist(end_lead)}")
     print(f"  comparisons skipped across gaps over {GAP_S}s: {c['gaps skipped']}")
 
-    snaps, v, status, lag, by_trip = profile_vehicles(vp_dir)
+    snaps, v, status, lag, by_trip, extra = profile_vehicles(vp_dir)
     print("\nVehiclePositions snapshots: " + ", ".join(f"{k} {n}" for k, n in snaps.items()))
     n = v["vehicles"]
     print(f"  vehicle positions {n}: " + ", ".join(
@@ -429,12 +517,16 @@ def main() -> None:
     print(f"  stop updates with a departure time: {pct(c['departure time'], s)}; of those with "
           f"both times, arrival == departure: {pct(c['arrival == departure'], c['both times'])}")
 
-    timepoints, last_seq = load_timepoints(sys.argv[3]) if len(sys.argv) > 3 else (None, None)
-    if last_seq is not None:
-        lc = last_stop_coverage(by_trip, last_seq)
+    static = load_static(sys.argv[3]) if len(sys.argv) > 3 else None
+    if static is not None:
+        lc, found, waits = last_stop_coverage(by_trip, static, extra)
         print("  trips by how their vehicle reports end: "
               + ", ".join(f"{k} {pct(n, sum(lc.values()))}" for k, n in lc.most_common()))
-    x, diffs, groups, strict = cross_check(drops, by_trip, first_seq, timepoints)
+        print("  following the vehicle to the last stop_id (STOPPED_AT within 30 min):")
+        for k, n in sorted(found.items()):
+            print(f"    {k}: {n}")
+        print(f"    seconds from the trip's last own report to that STOPPED_AT: {dist(waits)}")
+    x, diffs, groups, strict, where = cross_check(drops, by_trip, first_seq, static, extra)
     print("\nDropped stops checked against VehiclePositions")
     print("  " + ", ".join(f"{k} {n}" for k, n in x.items()))
     print(f"  TU last arrival minus first VP report at or past the stop (s): {dist(diffs)}")
@@ -451,6 +543,12 @@ def main() -> None:
         g = strict[label]
         total = sum(g.values())
         print(f"  {label[:64]:64} n={total:<6}" + "".join(f"{pct(g[b], total):>21}" for b in buckets))
+    if where:
+        print()
+        print("  Passed without stopping, TU >60s before VP's last 'not yet' report."
+              " Where was the bus at that report?")
+        for k, n in where.most_common():
+            print(f"    {k}: {pct(n, sum(where.values()))} ({n})")
 
 
 if __name__ == "__main__":
