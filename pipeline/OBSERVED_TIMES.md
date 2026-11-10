@@ -1,4 +1,4 @@
-# Observed times: rule v1 (draft)
+# Observed times: rule v1
 
 How realtime snapshots become an observed time for each scheduled stop visit, and why.
 Every output row carries `rule_version`. Changing anything below means a new version
@@ -67,12 +67,25 @@ From the reports that count:
 ## Arrival at the last stop
 
 TripUpdates can't be used here: trips leave the feed a median 196 s before their last
-stop's time. `STOPPED_AT` the last stop shows up for only 39.4% of trips, so status
-alone isn't enough.
+stop's time. Status alone isn't enough either: `STOPPED_AT` the last stop under the
+trip's own `trip_id` shows up for only 39.4% of trips, because the bus often switches
+to its next `trip_id` (and a different `stop_id`) as it pulls in.
 
-**Pending:** the GPS check under Open. If it works, the rule is: the first report by the
-trip's vehicle within 100 m of the last stop, under any trip_id (`source = vp_position`,
-bracket = the previous report to this one). Without one, the status is `lost`.
+The arrival is the **first report by the trip's vehicle that is either**:
+
+- `STOPPED_AT` the last stop on this trip, or
+- within **100 m** of the last stop's coordinates, under any `trip_id`.
+
+Two limits apply:
+
+- **Start:** only reports after the bus has passed the second-to-last stop on this
+  trip (strict, as above). This keeps loop routes, and routes that pass near their own
+  terminal, from matching an earlier pass.
+- **End:** no later than **10 minutes** after the trip's last report under its own
+  `trip_id`.
+
+`source = vp_stopped` or `vp_position`. The bracket runs from that vehicle's previous
+report to this one. Without such a report, the status is `lost`.
 
 ## Status of each scheduled visit
 
@@ -93,6 +106,8 @@ not in any loaded static version, go to `unscheduled_trips` and aren't scored.
 ## Thresholds
 
 - **Agreement tolerance:** 60 s (two polls).
+- **At a stop by position:** within 100 m of its coordinates.
+- **Last-stop search:** up to 10 min after the trip's last own report.
 - **Gap:** more than 90 s without a fresh snapshot.
 - **Feed frozen:** feed timestamp more than 120 s old.
 
@@ -126,21 +141,25 @@ not in any loaded static version, go to `unscheduled_trips` and aren't scored.
   field 32,148 times. Even then it's a departure, but a less accurate one: at stopped
   stops it matches the VP departure within 60 s for 86.9% (non-timepoints) and 75.2%
   (timepoints), against 97.9% and 98.8% for the arrival field.
+- **Last-stop arrivals need position.** Under the trip's own `trip_id`:
+  - 39.4% of trips show `STOPPED_AT` at the last stop;
+  - 41.9% head to it but never report stopped there;
+  - 17.4% stop reporting before it.
 
-## Open (check before v1 is final)
+  Following the vehicle to that `stop_id` and `STOPPED_AT` under any `trip_id`
+  recovered only 10 of about 1,580. Following it by GPS (within 100 m) recovered
+  1,269 (80%), 676 of them under another `trip_id`. That's about 88% of trips with an
+  observed last-stop arrival, and about 12% `lost`.
 
-- **Last-stop arrivals.** Under the trip's own `trip_id`, only 39.4% of trips show
-  `STOPPED_AT` at their last stop. 41.9% head to it but never report stopped there, and
-  17.4% stop reporting before it. Likely cause: the bus switches to its next `trip_id`
-  as it pulls in. `feed_profile.py` now follows the vehicle to the last stop's
-  `stop_id` under any `trip_id`, within 30 min. If that recovers most of them, the
-  last-stop rule follows the vehicle rather than the trip.
-- **Last-stop arrivals, second try.** Following the vehicle by status recovered only 10 of
-  about 1,580; the bus doesn't report `STOPPED_AT` that `stop_id` under any trip_id. A
-  likely reason: terminals use separate arrival and departure stop IDs.
-  `feed_profile.py` now looks for the vehicle's first report within 100 m of the last
-  stop's coordinates, under any trip_id. If that finds most of them, the last-stop
-  arrival is defined by position. If not, last-stop arrivals drop out of v1 scoring and
-  are reported only as coverage.
-- **Re-measure each new timetable version,** and when the disagreement report exists,
-  record its weekly numbers here.
+  Those reports came a median 21 s after the trip's last own report (p95 176 s). The
+  run searched from 10 min before to 30 min after, without the start limit. The
+  limits above will lower the count slightly.
+
+## To watch
+
+- **Last-stop limits:** how much the start and end limits change the 88%, and whether
+  `lost` last stops cluster on some routes (a skewed sample would bias the arrival
+  score).
+- **The weekly disagreement report:** record its numbers here with the rule version.
+- **Each new timetable version** (next expected around 2026-11-30): rerun
+  `feed_profile.py` with the new static zip and check these numbers still hold.
