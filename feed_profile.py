@@ -293,9 +293,30 @@ def load_timepoints(zip_path: str) -> dict:
     import io
     import zipfile
 
+    timepoints, last_seq = {}, {}
     with zipfile.ZipFile(zip_path) as zf:
         rows = csv.DictReader(io.TextIOWrapper(zf.open("stop_times.txt"), "utf-8-sig"))
-        return {(r["trip_id"], int(r["stop_sequence"])): r.get("timepoint") == "1" for r in rows}
+        for r in rows:
+            seq = int(r["stop_sequence"])
+            timepoints[(r["trip_id"], seq)] = r.get("timepoint") == "1"
+            last_seq[r["trip_id"]] = max(last_seq.get(r["trip_id"], seq), seq)
+    return timepoints, last_seq
+
+
+def last_stop_coverage(by_trip, last_seq) -> Counter:
+    """How each trip's vehicle reports end, relative to the trip's last scheduled stop."""
+    c: Counter = Counter()
+    for (trip_id, _), reports in by_trip.items():
+        last = last_seq.get(trip_id)
+        if last is None:
+            c["trip not in the static zip"] += 1
+        elif any(seq == last and st == "STOPPED_AT" for _, seq, st in reports):
+            c["STOPPED_AT the last stop"] += 1
+        elif any(seq == last for _, seq, _ in reports):
+            c["heading to the last stop, never STOPPED_AT it"] += 1
+        else:
+            c["reports end before the last stop"] += 1
+    return c
 
 
 def cross_check(drops, by_trip, first_seq, timepoints=None):
@@ -344,8 +365,17 @@ def cross_check(drops, by_trip, first_seq, timepoints=None):
         dep = departed(reports, floor_cache[key], s, rb[1])
         if dep is not None:
             strict[f"vs VP departure | {kind}"][size(pred - dep)] += 1
+        if kind == "passed without stopping":
+            # Inside the whole bracket (last report before the stop .. first report past it)?
+            lo = rb[0] if rb[0] is not None else rb[1]
+            inside = lo - TOLERANCE_S <= pred <= rb[1] + TOLERANCE_S
+            strict["passed without stopping: TU inside bracket"][
+                "within 60s" if inside else size(pred - rb[1])] += 1
         if tu_dep is not None and tu_dep != pred:
             c["TU departure differs from TU arrival"] += 1
+            strict[f"TU departure FIELD vs VP arrival   | {kind}"][size(tu_dep - rb[1])] += 1
+            if dep is not None:
+                strict[f"TU departure FIELD vs VP departure | {kind}"][size(tu_dep - dep)] += 1
     return c, diffs, groups, strict
 
 
@@ -399,7 +429,11 @@ def main() -> None:
     print(f"  stop updates with a departure time: {pct(c['departure time'], s)}; of those with "
           f"both times, arrival == departure: {pct(c['arrival == departure'], c['both times'])}")
 
-    timepoints = load_timepoints(sys.argv[3]) if len(sys.argv) > 3 else None
+    timepoints, last_seq = load_timepoints(sys.argv[3]) if len(sys.argv) > 3 else (None, None)
+    if last_seq is not None:
+        lc = last_stop_coverage(by_trip, last_seq)
+        print("  trips by how their vehicle reports end: "
+              + ", ".join(f"{k} {pct(n, sum(lc.values()))}" for k, n in lc.most_common()))
     x, diffs, groups, strict = cross_check(drops, by_trip, first_seq, timepoints)
     print("\nDropped stops checked against VehiclePositions")
     print("  " + ", ".join(f"{k} {n}" for k, n in x.items()))
@@ -411,12 +445,12 @@ def main() -> None:
     for label, g in groups.items():
         total = sum(g.values())
         print(f"  {label[:44]:44} n={total:<6}" + "".join(f"{pct(g[b], total):>21}" for b in buckets))
-    print(f"\n  {'Strict brackets only: TU time minus VP time':52}"
+    print(f"\n  {'Strict brackets only: TU time minus VP time':72}"
           + "".join(f"{b:>21}" for b in buckets))
     for label in sorted(strict):
         g = strict[label]
         total = sum(g.values())
-        print(f"  {label[:44]:44} n={total:<6}" + "".join(f"{pct(g[b], total):>21}" for b in buckets))
+        print(f"  {label[:64]:64} n={total:<6}" + "".join(f"{pct(g[b], total):>21}" for b in buckets))
 
 
 if __name__ == "__main__":
