@@ -15,11 +15,16 @@ The mini feed (tests/fixtures/mini_feed/) is America/Toronto, calendar
     WK   Mon-Fri, calendar.txt      trip WK1   (8:00, blank, 08:20)
     DAY  every day, calendar.txt    trip NIGHT (23:50, 24:40, 25:30)
                                     trip EARLY (00:30, 01:30)
+                                    trip EARLY_LATE (24:30, 25:30): EARLY +24 h,
+                                         like Durham's duplicated night trips
+                                    trip EARLY_ODD (24:30, 25:40): near miss, not a twin
     HOL  calendar_dates.txt only    trip HOL1  (10:00, 10:15)
 
 calendar_dates.txt: 2026-12-25 removes WK and adds HOL.
 
-Stop visits per service date: weekday 8, Saturday/Sunday 5, 2026-12-25 7.
+The files hold 6 trips and 14 stop_times, all loaded as-is. EARLY_LATE is recorded
+in gtfs.trip_alias as a copy of EARLY and left out of scheduled stop visits:
+weekday 10, Saturday/Sunday 7, 2026-12-25 9.
 """
 
 from __future__ import annotations
@@ -43,8 +48,8 @@ MINI_FEED = Path(__file__).resolve().parent / "fixtures" / "mini_feed"
 # The name the logger would give a zip fetched at 2026-10-26 12:00:00 UTC.
 MINI_ZIP_NAME = "20261026T120000Z.zip"
 
-WEEKDAY_VISITS = 8
-WEEKEND_VISITS = 5
+WEEKDAY_VISITS = 10
+WEEKEND_VISITS = 7
 
 
 @pytest.fixture(scope="session")

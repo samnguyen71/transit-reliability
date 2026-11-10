@@ -3,3 +3,5 @@ R1,WK,WK1,To Charlie,0
 R2,DAY,NIGHT,To Alpha,1
 R2,DAY,EARLY,To Bravo,0
 R1,HOL,HOL1,To Bravo,0
+R2,DAY,EARLY_LATE,To Bravo,0
+R2,DAY,EARLY_ODD,To Bravo,0

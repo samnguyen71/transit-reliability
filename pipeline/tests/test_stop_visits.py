@@ -48,9 +48,9 @@ def test_active_services(conn, feed_id, day, expected):
 @pytest.mark.parametrize(
     ("day", "expected"),
     [
-        (date(2026, 10, 28), WEEKDAY_VISITS),       # WK1 3 + NIGHT 3 + EARLY 2
-        (date(2026, 10, 31), WEEKEND_VISITS),       # NIGHT 3 + EARLY 2
-        (date(2026, 12, 25), WEEKEND_VISITS + 2),   # DAY 5 + HOL1 2
+        (date(2026, 10, 28), WEEKDAY_VISITS),       # WK1 3 + NIGHT 3 + EARLY 2 + EARLY_ODD 2
+        (date(2026, 10, 31), WEEKEND_VISITS),       # NIGHT 3 + EARLY 2 + EARLY_ODD 2
+        (date(2026, 12, 25), WEEKEND_VISITS + 2),   # DAY 7 + HOL1 2
         (date(2027, 3, 22), 0),
     ],
 )

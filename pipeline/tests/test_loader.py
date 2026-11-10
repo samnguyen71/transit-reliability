@@ -1,7 +1,7 @@
 """The real loader, run on the mini feed.
 
 The feed_id fixture (conftest.py) has already loaded it once, including the
-loader's own visit-count check with the expected 8 weekday / 5 weekend visits.
+loader's own visit-count check with the expected 10 weekday / 7 weekend visits.
 """
 
 from datetime import UTC, datetime
@@ -39,8 +39,8 @@ def test_feed_row(conn, feed_id, mini_zip):
         ("agency", 1),
         ("stops", 3),
         ("routes", 2),
-        ("trips", 4),
-        ("stop_times", 10),
+        ("trips", 6),           # includes the twin EARLY_LATE: rows are kept as-is
+        ("stop_times", 14),
         ("calendar", 2),
         ("calendar_dates", 2),   # this file has CRLF line endings in the zip
     ],
