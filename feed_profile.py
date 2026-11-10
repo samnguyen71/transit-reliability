@@ -118,6 +118,7 @@ def profile_trip_updates(folder: str):
     prev: dict = {}
     h_prev = None
     keys = set()
+    first_seq: dict = {}  # (trip_id, start_date) -> lowest stop_sequence TU ever listed
     for h, feed in fresh_snapshots(folder, counts):
         cur: dict = {}
         for e in feed.entity:
@@ -159,6 +160,7 @@ def profile_trip_updates(folder: str):
                     c["with a time"] += 1
                     c["time already past"] += tm < h - PAST_S
                 stops[u.stop_sequence] = tm
+                first_seq[key] = min(first_seq.get(key, u.stop_sequence), u.stop_sequence)
             cur[key] = stops
 
         if h_prev is not None and h - h_prev > GAP_S:
@@ -184,7 +186,7 @@ def profile_trip_updates(folder: str):
                         c["past stop seen again"] += 1
                         c["past stop time changed"] += new[s] != tm
         prev, h_prev = cur, h
-    return counts, c, trip_rel, stop_rel, drop_lead, end_lead, drops, keys
+    return counts, c, trip_rel, stop_rel, drop_lead, end_lead, drops, keys, first_seq
 
 
 def profile_vehicles(folder: str):
@@ -205,6 +207,9 @@ def profile_vehicles(folder: str):
                 c[f"with {f}"] += v.HasField(f)
             st = STATUS[v.current_status] if v.HasField("current_status") else None
             status[st or "(not set)"] += 1
+            if v.HasField("timestamp") and v.timestamp == 0:
+                c["timestamp 0 (report skipped)"] += 1
+                continue
             ts = v.timestamp if v.HasField("timestamp") else h
             if v.HasField("timestamp"):
                 lag.append(h - v.timestamp)
@@ -219,33 +224,75 @@ def profile_vehicles(folder: str):
     return counts, c, status, lag, by_trip
 
 
-def cross_check(drops, by_trip):
+def bracket(reports, s, robust):
+    """(lo, hi, how, trip_started_past) for stop s, or None if never reached.
+
+    hi is the first report at the stop (STOPPED_AT) or past it. robust=True only accepts
+    a report if no later report on the trip goes back before s, and "past the stop" only
+    once the bus has been seen before the stop on this trip (so a bus still reporting its
+    previous trip's stop_sequence under the new trip_id doesn't count).
+    """
+    floor = None
+    if robust:
+        floor = [0] * len(reports)
+        m = float("inf")
+        for i in range(len(reports) - 1, -1, -1):
+            m = min(m, reports[i][1])
+            floor[i] = m
+    lo = None
+    for i, (ts, seq, st) in enumerate(reports):
+        reached = seq > s or (seq == s and st == "STOPPED_AT")
+        how = "STOPPED_AT the stop" if seq == s else "seen past the stop"
+        if reached and (not robust or (floor[i] >= s and (lo is not None or seq == s))):
+            return lo, ts, how, lo is None
+        if not reached:
+            lo = ts
+    return None
+
+
+def size(d: float) -> str:
+    if d < -TOLERANCE_S:
+        return "TU earlier by >60s"
+    if d <= TOLERANCE_S:
+        return "within 60s"
+    if d <= 300:
+        return "TU later by 1-5 min"
+    return "TU later by >5 min"
+
+
+def cross_check(drops, by_trip, first_seq):
     """For each stop that dropped out of TripUpdates, bracket its arrival with VehiclePositions."""
     c: Counter = Counter()
     diffs = []
-    for key, s, pred, _ in drops:
+    groups: dict = defaultdict(Counter)  # breakdown label -> Counter(size bucket)
+    for key, s, pred, h_last in drops:
         reports = by_trip.get(key)
         if not reports:
             c["no vehicle reports for the trip"] += 1
             continue
-        before = after = None
-        stopped = False
-        for ts, seq, st in reports:
-            reached = seq > s or (seq == s and st == "STOPPED_AT")
-            stopped |= seq == s and st == "STOPPED_AT"
-            if reached:
-                after = ts
-                break
-            before = ts
-        if after is None:
+        b = bracket(reports, s, robust=False)
+        if b is None:
             c["vehicle never shown at or past the stop"] += 1
             continue
+        lo, hi, how, started_past = b
         c["bracketed"] += 1
-        c["STOPPED_AT seen for the stop"] += stopped
-        diffs.append(pred - after)
-        lo = (before if before is not None else after) - TOLERANCE_S
-        c["TU inside the VP bracket"] += lo <= pred <= after + TOLERANCE_S
-    return c, diffs
+        c["STOPPED_AT seen for the stop"] += how == "STOPPED_AT the stop"
+        d = pred - hi
+        diffs.append(d)
+        inside = (lo if lo is not None else hi) - TOLERANCE_S <= pred <= hi + TOLERANCE_S
+        c["TU inside the VP bracket"] += inside
+        bucket = size(d)
+        groups["all"][bucket] += 1
+        groups["first stop of the trip" if s == first_seq.get(key) else "later stops"][bucket] += 1
+        groups["trip's first VP report already at/past the stop" if started_past
+               else "VP saw the bus before the stop"][bucket] += 1
+        groups[f"hi from: {how}"][bucket] += 1
+        groups["TU time still ahead when the stop dropped" if pred > h_last
+               else "TU time already past when the stop dropped"][bucket] += 1
+        rb = bracket(reports, s, robust=True)
+        groups["robust hi (seen before stop, never goes back)" if rb else "robust: never reached"][
+            size(pred - rb[1]) if rb else "n/a"] += 1
+    return c, diffs, groups
 
 
 def main() -> None:
@@ -255,7 +302,8 @@ def main() -> None:
     print(f"VehiclePositions manifest ({vp_dir})")
     print("\n".join(manifest(vp_dir)))
 
-    snaps, c, trip_rel, stop_rel, drop_lead, end_lead, drops, tu_keys = profile_trip_updates(tu_dir)
+    (snaps, c, trip_rel, stop_rel, drop_lead, end_lead, drops, tu_keys,
+     first_seq) = profile_trip_updates(tu_dir)
     print("\nTripUpdates snapshots: " + ", ".join(f"{k} {n}" for k, n in snaps.items()))
     n, s = c["trip updates"], c["stop updates"]
     print(f"  trip updates {n}: " + ", ".join(
@@ -292,12 +340,19 @@ def main() -> None:
     print(f"  trips in TripUpdates only {len(tu_keys - vp_keys)}, in VehiclePositions only "
           f"{len(vp_keys - tu_keys)}, in both {len(tu_keys & vp_keys)}")
 
-    x, diffs = cross_check(drops, by_trip)
+    print(f"  vehicle timestamps of 0, skipped: {v['timestamp 0 (report skipped)']}")
+
+    x, diffs, groups = cross_check(drops, by_trip, first_seq)
     print("\nDropped stops checked against VehiclePositions")
     print("  " + ", ".join(f"{k} {n}" for k, n in x.items()))
     print(f"  TU last arrival minus first VP report at or past the stop (s): {dist(diffs)}")
     print(f"  TU inside the VP bracket +/-{TOLERANCE_S}s: "
           f"{pct(x['TU inside the VP bracket'], x['bracketed'])}")
+    buckets = ["TU earlier by >60s", "within 60s", "TU later by 1-5 min", "TU later by >5 min"]
+    print(f"\n  {'TU arrival minus VP hi, by group':52}" + "".join(f"{b:>21}" for b in buckets))
+    for label, g in groups.items():
+        total = sum(g.values())
+        print(f"  {label[:44]:44} n={total:<6}" + "".join(f"{pct(g[b], total):>21}" for b in buckets))
 
 
 if __name__ == "__main__":

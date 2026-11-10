@@ -235,6 +235,7 @@ INSERT_STATEMENTS = {
     """),
 }
 
+
 def read_agency_timezone(zf: zipfile.ZipFile) -> str | None:
     if "agency.txt" not in zf.namelist():
         return None
@@ -249,6 +250,7 @@ def read_agency_timezone(zf: zipfile.ZipFile) -> str | None:
                 return tz.strip()
     return None
 
+
 def calculate_sha256(filepath: str) -> str:
     """Computes SHA-256 hash of a file on disk."""
     h = hashlib.sha256()
@@ -256,6 +258,7 @@ def calculate_sha256(filepath: str) -> str:
         while chunk := f.read(1 << 20):
             h.update(chunk)
     return h.hexdigest()
+
 
 # Create a temporary staging table, streams COPY data, and runs INSERT ... SELECT
 def process_gtfs_file(cur: psycopg.Cursor, zf: zipfile.ZipFile, name: str, feed_id: int):
@@ -297,6 +300,7 @@ def process_gtfs_file(cur: psycopg.Cursor, zf: zipfile.ZipFile, name: str, feed_
     # Drop temporary staging table to free backend resource for next file
     cur.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(stg))
 
+
 def fetched_at_from_name(zip_path: str) -> datetime:
     """The logger names zips by UTC fetch time: 20261008T210430Z.zip (or ..._1.zip).
     Falls back to the file's modification time for zips from elsewhere."""
@@ -305,6 +309,7 @@ def fetched_at_from_name(zip_path: str) -> datetime:
         return datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
     print(f"  (no timestamp in '{zip_path}' name; using its modification time)")
     return datetime.fromtimestamp(os.path.getmtime(zip_path), tz=UTC)
+
 
 # Sanity check: count scheduled stop visits on one ordinary (no calendar_dates
 # exception) day of the given ISO weekday. Raises, rolling back the load, when the
@@ -335,6 +340,7 @@ def check_visits(cur: psycopg.Cursor, feed_id: int, isodow: int, label: str, exp
         raise ValueError(f"no scheduled stop visits on {label} {day}")
     if expected is not None and count != expected:
         raise ValueError(f"{label} {day} has {count:,} stop visits, expected {expected:,}")
+
 
 # Process a single GTFS zip archive inside a dedicated transaction block
 def load_zip(conn: psycopg.Connection, zip_path: str,
@@ -381,6 +387,7 @@ def load_zip(conn: psycopg.Connection, zip_path: str,
 
                 check_visits(cur, feed_id, 3, "Wednesday", expect_weekday)
                 check_visits(cur, feed_id, 6, "Saturday", expect_weekend)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Load GTFS ZIP archives into PostgreSQL.")
