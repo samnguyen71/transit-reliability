@@ -60,7 +60,55 @@ JOIN gtfs.stop_times st
   ON st.feed_id = t.feed_id
  AND st.trip_id = t.trip_id
 JOIN gtfs.feed f
-  ON f.feed_id = p_feed;
+  ON f.feed_id = p_feed
+-- Aliased trips are copies of a canonical trip that is already listed.
+WHERE NOT EXISTS (SELECT 1 FROM gtfs.trip_alias a
+                  WHERE a.feed_id = t.feed_id AND a.trip_id = t.trip_id);
+$$;
+
+-- Record every exact +24 h copy of a trip as an alias of the earlier copy.
+-- Strict on purpose: same route, service and direction, same stop_sequences and
+-- stops, and every arrival and departure exactly 86400 s later (blank stays blank).
+-- Returns the number of aliases recorded.
+CREATE OR REPLACE FUNCTION gtfs.mark_overnight_twins(p_feed int)
+RETURNS int LANGUAGE sql AS $$
+WITH sig AS (
+    SELECT t.trip_id, t.route_id, t.service_id, t.direction_id,
+           array_agg(st.stop_sequence ORDER BY st.stop_sequence) AS seqs,
+           array_agg(st.stop_id ORDER BY st.stop_sequence) AS stops,
+           array_agg(st.arrival_secs ORDER BY st.stop_sequence) AS arr,
+           array_agg(st.departure_secs ORDER BY st.stop_sequence) AS dep,
+           array_agg(st.arrival_secs - 86400 ORDER BY st.stop_sequence) AS arr_back,
+           array_agg(st.departure_secs - 86400 ORDER BY st.stop_sequence) AS dep_back
+    FROM gtfs.trips t
+    JOIN gtfs.stop_times st ON st.feed_id = t.feed_id AND st.trip_id = t.trip_id
+    WHERE t.feed_id = p_feed
+    GROUP BY t.trip_id, t.route_id, t.service_id, t.direction_id
+), ins AS (
+    INSERT INTO gtfs.trip_alias (feed_id, trip_id, canonical_trip_id, reason)
+    SELECT p_feed, late.trip_id, early.trip_id, 'overnight_twin_24h'
+    FROM sig late
+    JOIN sig early
+      ON early.route_id = late.route_id
+     AND early.service_id = late.service_id
+     AND early.direction_id IS NOT DISTINCT FROM late.direction_id
+     AND early.seqs = late.seqs
+     AND early.stops = late.stops
+     AND early.arr = late.arr_back
+     AND early.dep = late.dep_back
+    RETURNING 1
+)
+SELECT count(*)::int FROM ins;
+$$;
+
+-- The trip a realtime trip_id should be scored as. Keep realtime's start_date as is:
+-- DRT already sends the calendar date, which is the canonical (early) trip's service date.
+CREATE OR REPLACE FUNCTION gtfs.canonical_trip_id(p_feed int, p_trip_id text)
+RETURNS text LANGUAGE sql STABLE AS $$
+  SELECT coalesce(
+    (SELECT a.canonical_trip_id FROM gtfs.trip_alias a
+      WHERE a.feed_id = p_feed AND a.trip_id = p_trip_id),
+    p_trip_id)
 $$;
 
 CREATE OR REPLACE FUNCTION gtfs.parse_secs(val text)

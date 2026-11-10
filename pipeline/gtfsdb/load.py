@@ -374,6 +374,11 @@ def load_zip(conn: psycopg.Connection, zip_path: str,
                         print(f"  -> Ingesting {filename}...")
                         process_gtfs_file(cur, zf, filename, feed_id)
 
+                # Rows above are exactly what the files say. Known exceptions are
+                # recorded separately, derived from those rows (see gtfs.trip_alias).
+                cur.execute("SELECT gtfs.mark_overnight_twins(%s)", (feed_id,))
+                print(f"  -> {cur.fetchone()[0]} overnight +24h twins recorded in trip_alias")
+
                 check_visits(cur, feed_id, 3, "Wednesday", expect_weekday)
                 check_visits(cur, feed_id, 6, "Saturday", expect_weekend)
 

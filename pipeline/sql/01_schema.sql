@@ -62,6 +62,22 @@ CREATE TABLE IF NOT EXISTS gtfs.calendar_dates (
   PRIMARY KEY (feed_id, service_id, date)
 );
 
+-- Known exceptions: trips the feed contains but that should be counted as another trip.
+-- The loader never deletes or edits rows from the files; it records the exception here
+-- (in the same transaction, from the loaded data), and downstream code reads it.
+--   overnight_twin_24h: an exact copy of canonical_trip_id, every time +24:00:00, same
+--   route, service, direction and stops. DRT ships 26 of these in Overnight. Realtime
+--   reports them under the late trip_id before ~03:00 local, with start_date = the
+--   calendar date, i.e. as the early twin on that date. See pipeline/KNOWN_EXCEPTIONS.md.
+CREATE TABLE IF NOT EXISTS gtfs.trip_alias (
+  feed_id int, trip_id text, canonical_trip_id text NOT NULL, reason text NOT NULL,
+  PRIMARY KEY (feed_id, trip_id),
+  FOREIGN KEY (feed_id, trip_id) REFERENCES gtfs.trips ON DELETE CASCADE,
+  FOREIGN KEY (feed_id, canonical_trip_id) REFERENCES gtfs.trips (feed_id, trip_id)
+    ON DELETE CASCADE,
+  CHECK (trip_id <> canonical_trip_id)
+);
+
 CREATE INDEX IF NOT EXISTS trips_service_idx ON gtfs.trips (feed_id, service_id);        -- date → trips
 CREATE INDEX IF NOT EXISTS calendar_dates_date_idx ON gtfs.calendar_dates (feed_id, date); -- exceptions on a date
 CREATE INDEX IF NOT EXISTS stop_times_stop_idx ON gtfs.stop_times (feed_id, stop_id);    -- visits at a stop (Phase 2)
