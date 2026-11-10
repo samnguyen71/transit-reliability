@@ -1,7 +1,9 @@
 """Profile one UTC day of realtime snapshots: what an observed-arrival rule can rely on.
 
 Usage:
-    python feed_profile.py TRIP_UPDATES_DAY VEHICLE_POSITIONS_DAY
+    python feed_profile.py TRIP_UPDATES_DAY VEHICLE_POSITIONS_DAY [STATIC_ZIP]
+
+STATIC_ZIP (optional) splits the results by timepoint.
 
 for example
     python feed_profile.py data/raw/trip_updates/2026-11-05 data/raw/vehicle_positions/2026-11-05
@@ -119,8 +121,10 @@ def profile_trip_updates(folder: str):
     h_prev = None
     keys = set()
     first_seq: dict = {}  # (trip_id, start_date) -> lowest stop_sequence TU ever listed
+    dep_prev: dict = {}
     for h, feed in fresh_snapshots(folder, counts):
         cur: dict = {}
+        dep_cur: dict = defaultdict(dict)  # key -> {stop_sequence: departure time}
         for e in feed.entity:
             if not e.HasField("trip_update"):
                 continue
@@ -160,6 +164,12 @@ def profile_trip_updates(folder: str):
                     c["with a time"] += 1
                     c["time already past"] += tm < h - PAST_S
                 stops[u.stop_sequence] = tm
+                if u.HasField("departure") and u.departure.HasField("time"):
+                    c["departure time"] += 1
+                    if arr is not None and arr.HasField("time"):
+                        c["both times"] += 1
+                        c["arrival == departure"] += arr.time == u.departure.time
+                    dep_cur[key][u.stop_sequence] = u.departure.time
                 first_seq[key] = min(first_seq.get(key, u.stop_sequence), u.stop_sequence)
             cur[key] = stops
 
@@ -181,11 +191,11 @@ def profile_trip_updates(folder: str):
                     if s not in new and s < top:
                         if tm is not None:
                             drop_lead.append(tm - h_prev)
-                            drops.append((key, s, tm, h_prev))
+                            drops.append((key, s, tm, h_prev, dep_prev.get(key, {}).get(s)))
                     elif s in new and tm is not None and new[s] is not None and tm < h_prev - PAST_S:
                         c["past stop seen again"] += 1
                         c["past stop time changed"] += new[s] != tm
-        prev, h_prev = cur, h
+        prev, h_prev, dep_prev = cur, h, dep_cur
     return counts, c, trip_rel, stop_rel, drop_lead, end_lead, drops, keys, first_seq
 
 
@@ -260,12 +270,42 @@ def size(d: float) -> str:
     return "TU later by >5 min"
 
 
-def cross_check(drops, by_trip, first_seq):
+def floors(reports) -> list[int]:
+    """floors[i] = the lowest stop_sequence in reports[i:]."""
+    out = [0] * len(reports)
+    m = float("inf")
+    for i in range(len(reports) - 1, -1, -1):
+        m = min(m, reports[i][1])
+        out[i] = m
+    return out
+
+
+def departed(reports, floor, s, after_ts):
+    """First report at or after after_ts that is past s for good: the VP departure time."""
+    for i, (ts, seq, _) in enumerate(reports):
+        if ts >= after_ts and seq > s and floor[i] > s:
+            return ts
+    return None
+
+
+def load_timepoints(zip_path: str) -> dict:
+    import csv
+    import io
+    import zipfile
+
+    with zipfile.ZipFile(zip_path) as zf:
+        rows = csv.DictReader(io.TextIOWrapper(zf.open("stop_times.txt"), "utf-8-sig"))
+        return {(r["trip_id"], int(r["stop_sequence"])): r.get("timepoint") == "1" for r in rows}
+
+
+def cross_check(drops, by_trip, first_seq, timepoints=None):
     """For each stop that dropped out of TripUpdates, bracket its arrival with VehiclePositions."""
     c: Counter = Counter()
     diffs = []
     groups: dict = defaultdict(Counter)  # breakdown label -> Counter(size bucket)
-    for key, s, pred, h_last in drops:
+    strict: dict = defaultdict(Counter)  # same, strict brackets only, arrival vs departure
+    floor_cache: dict = {}
+    for key, s, pred, h_last, tu_dep in drops:
         reports = by_trip.get(key)
         if not reports:
             c["no vehicle reports for the trip"] += 1
@@ -292,7 +332,21 @@ def cross_check(drops, by_trip, first_seq):
         rb = bracket(reports, s, robust=True)
         groups["robust hi (seen before stop, never goes back)" if rb else "robust: never reached"][
             size(pred - rb[1]) if rb else "n/a"] += 1
-    return c, diffs, groups
+        if not rb:
+            continue
+        if key not in floor_cache:
+            floor_cache[key] = floors(reports)
+        kind = "stopped" if rb[2] == "STOPPED_AT the stop" else "passed without stopping"
+        if kind == "stopped" and timepoints is not None:
+            tp = timepoints.get((key[0], s))
+            kind += ", timepoint" if tp else ", not a timepoint" if tp is not None else ", ?"
+        strict[f"vs VP arrival   | {kind}"][size(pred - rb[1])] += 1
+        dep = departed(reports, floor_cache[key], s, rb[1])
+        if dep is not None:
+            strict[f"vs VP departure | {kind}"][size(pred - dep)] += 1
+        if tu_dep is not None and tu_dep != pred:
+            c["TU departure differs from TU arrival"] += 1
+    return c, diffs, groups, strict
 
 
 def main() -> None:
@@ -342,7 +396,11 @@ def main() -> None:
 
     print(f"  vehicle timestamps of 0, skipped: {v['timestamp 0 (report skipped)']}")
 
-    x, diffs, groups = cross_check(drops, by_trip, first_seq)
+    print(f"  stop updates with a departure time: {pct(c['departure time'], s)}; of those with "
+          f"both times, arrival == departure: {pct(c['arrival == departure'], c['both times'])}")
+
+    timepoints = load_timepoints(sys.argv[3]) if len(sys.argv) > 3 else None
+    x, diffs, groups, strict = cross_check(drops, by_trip, first_seq, timepoints)
     print("\nDropped stops checked against VehiclePositions")
     print("  " + ", ".join(f"{k} {n}" for k, n in x.items()))
     print(f"  TU last arrival minus first VP report at or past the stop (s): {dist(diffs)}")
@@ -351,6 +409,12 @@ def main() -> None:
     buckets = ["TU earlier by >60s", "within 60s", "TU later by 1-5 min", "TU later by >5 min"]
     print(f"\n  {'TU arrival minus VP hi, by group':52}" + "".join(f"{b:>21}" for b in buckets))
     for label, g in groups.items():
+        total = sum(g.values())
+        print(f"  {label[:44]:44} n={total:<6}" + "".join(f"{pct(g[b], total):>21}" for b in buckets))
+    print(f"\n  {'Strict brackets only: TU time minus VP time':52}"
+          + "".join(f"{b:>21}" for b in buckets))
+    for label in sorted(strict):
+        g = strict[label]
         total = sum(g.values())
         print(f"  {label[:44]:44} n={total:<6}" + "".join(f"{pct(g[b], total):>21}" for b in buckets))
 
