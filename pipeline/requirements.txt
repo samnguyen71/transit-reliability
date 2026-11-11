@@ -9,6 +9,7 @@ pluggy==1.7.0
 protobuf==7.36.2
 psycopg==3.3.8
 psycopg-binary==3.3.8
+pyarrow==26.0.1
 Pygments==2.21.0
 pytest==9.1.1
 requests==2.34.2
