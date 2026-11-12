@@ -354,39 +354,38 @@ def load_zip(conn: psycopg.Connection, zip_path: str,
         fetched_at = fetched_at_from_name(zip_path)
 
         # Transaction boundary: All inserts roll back if an exception occurs
-        with conn.transaction():
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
+        with conn.transaction(), conn.cursor() as cur:
+            cur.execute(
+                """
                     INSERT INTO gtfs.feed (sha256, zip_path, fetched_at, timezone)
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT (sha256) DO NOTHING
                     RETURNING feed_id;
                     """,
-                    (sha256, os.path.abspath(zip_path), fetched_at, tz),
-                )
-                row = cur.fetchone()
-                
-                # If no row returned, this hash has already been loaded successfully
-                if not row:
-                    print(f"Skipping '{zip_path}' (sha256: {sha256[:8]}...): already loaded.")
-                    return
+                (sha256, os.path.abspath(zip_path), fetched_at, tz),
+            )
+            row = cur.fetchone()
+            
+            # If no row returned, this hash has already been loaded successfully
+            if not row:
+                print(f"Skipping '{zip_path}' (sha256: {sha256[:8]}...): already loaded.")
+                return
 
-                feed_id = row[0]
-                print(f"Loading '{zip_path}' (feed_id: {feed_id})...")
+            feed_id = row[0]
+            print(f"Loading '{zip_path}' (feed_id: {feed_id})...")
 
-                for filename in FILE_ORDER:
-                    if filename in zf.namelist():
-                        print(f"  -> Ingesting {filename}...")
-                        process_gtfs_file(cur, zf, filename, feed_id)
+            for filename in FILE_ORDER:
+                if filename in zf.namelist():
+                    print(f"  -> Ingesting {filename}...")
+                    process_gtfs_file(cur, zf, filename, feed_id)
 
-                # Rows above are exactly what the files say. Known exceptions are
-                # recorded separately, derived from those rows (see gtfs.trip_alias).
-                cur.execute("SELECT gtfs.mark_overnight_twins(%s)", (feed_id,))
-                print(f"  -> {cur.fetchone()[0]} overnight +24h twins recorded in trip_alias")
+            # Rows above are exactly what the files say. Known exceptions are
+            # recorded separately, derived from those rows (see gtfs.trip_alias).
+            cur.execute("SELECT gtfs.mark_overnight_twins(%s)", (feed_id,))
+            print(f"  -> {cur.fetchone()[0]} overnight +24h twins recorded in trip_alias")
 
-                check_visits(cur, feed_id, 3, "Wednesday", expect_weekday)
-                check_visits(cur, feed_id, 6, "Saturday", expect_weekend)
+            check_visits(cur, feed_id, 3, "Wednesday", expect_weekday)
+            check_visits(cur, feed_id, 6, "Saturday", expect_weekend)
 
 
 def main():

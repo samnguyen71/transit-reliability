@@ -40,9 +40,8 @@ class ReadHeaderTest(unittest.TestCase):
             "truncated feed": feed_message(vehicle_entity("a"))[:-3],
         }
         for label, data in not_feeds.items():
-            with self.subTest(label):
-                with self.assertRaises(ValueError):
-                    gtfsrt.read_header(data)
+            with self.subTest(label), self.assertRaises(ValueError):
+                gtfsrt.read_header(data)
 
     def test_signed_handles_negative_int32(self):
         self.assertEqual(gtfsrt.signed((1 << 64) - 90), -90)

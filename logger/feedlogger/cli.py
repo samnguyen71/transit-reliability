@@ -13,7 +13,7 @@ import time
 import traceback
 from collections.abc import Iterable
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import requests
@@ -259,7 +259,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         raise ConfigError(f"no {args.config} to read data_dir from: pass --data-dir")
     if not data_dir.is_dir():
         raise ConfigError(f"{data_dir} doesn't exist yet. Has the logger run?")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     usage = shutil.disk_usage(data_dir)
     print(
         format_report(

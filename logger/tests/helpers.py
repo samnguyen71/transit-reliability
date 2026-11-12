@@ -224,15 +224,15 @@ class ServerTestCase(unittest.TestCase):
 
 
 def make_feed(url: str, **overrides) -> Feed:
-    settings = dict(
-        name="vehicles",
-        url=url,
-        kind="realtime",
-        interval=30.0,
-        timeout=5.0,
-        max_bytes=10 * 1024 * 1024,
-        headers={},
-        healthcheck_url=None,
-    )
+    settings = {
+        "name": "vehicles",
+        "url": url,
+        "kind": "realtime",
+        "interval": 30.0,
+        "timeout": 5.0,
+        "max_bytes": 10 * 1024 * 1024,
+        "headers": {},
+        "healthcheck_url": None,
+    }
     settings.update(overrides)
     return Feed(**settings)

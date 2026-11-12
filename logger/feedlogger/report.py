@@ -11,7 +11,8 @@ import re
 import statistics
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 
 from feedlogger.fmt import human_bytes, human_duration
@@ -56,7 +57,7 @@ class FeedStats:
 
 def collect_stats(data_dir: Path, days: int = 7, now: datetime | None = None) -> list[FeedStats]:
     """Read the last `days` UTC days of manifests and snapshots for every feed."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     first_day = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
     all_stats = []
     feed_dirs = sorted(
@@ -103,11 +104,11 @@ def collect_stats(data_dir: Path, days: int = 7, now: datetime | None = None) ->
             good.sort()
             stats.first, stats.last = attempts[0], attempts[-1]
             stats.last_good = good[-1] if good else None
-            gaps = [(b - a).total_seconds() for a, b in zip(attempts, attempts[1:])]
+            gaps = [(b - a).total_seconds() for a, b in pairwise(attempts)]
             stats.interval = statistics.median(gaps) if gaps else None
             # Gaps between good fetches, including any before the first one.
             marks = [attempts[0], *good] if good and good[0] > attempts[0] else good
-            for a, b in zip(marks, marks[1:]):
+            for a, b in pairwise(marks):
                 gap = (b - a).total_seconds()
                 if gap > stats.outage_threshold:
                     stats.outages.append((a, gap))
@@ -126,8 +127,10 @@ def format_report(
     now: datetime,
 ) -> str:
     lines = [
-        f"{data_dir}, last {days} days (times in UTC). "
-        f"Disk: {human_bytes(free_bytes)} free of {human_bytes(total_bytes)}.",
+        (
+            f"{data_dir}, last {days} days (times in UTC). "
+            f"Disk: {human_bytes(free_bytes)} free of {human_bytes(total_bytes)}."
+        ),
         "",
     ]
     if not any(s.attempts for s in stats):
@@ -198,9 +201,10 @@ def format_report(
     else:
         per_day = sum(rates.values())
         lines += [
-            "",
-            f"Disk use: about {human_bytes(per_day)} per day, {human_bytes(per_day * 30)} per "
-            f"30 days, {human_bytes(per_day * 90)} per 90 days.",
+            (
+                f"Disk use: about {human_bytes(per_day)} per day, {human_bytes(per_day * 30)} per "
+                f"30 days, {human_bytes(per_day * 90)} per 90 days."
+            ),
         ]
         days_left = max(0, free_bytes - reserve_bytes) / per_day
         full_on = now + timedelta(days=days_left)

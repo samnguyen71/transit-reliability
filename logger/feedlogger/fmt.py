@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def utc_iso(ts: float) -> str:
     """2026-10-08T21:04:30.123Z"""
-    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    dt = datetime.fromtimestamp(ts, tz=UTC)
     return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 

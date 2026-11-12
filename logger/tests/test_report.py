@@ -1,12 +1,12 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from feedlogger.report import collect_stats, format_report
 
-START = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+START = datetime(2026, 10, 8, 12, 0, tzinfo=UTC)
 MB = 1024 * 1024
 GB = 1024 * MB
 

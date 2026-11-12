@@ -150,11 +150,14 @@ def describe_realtime(
 
     per_day = gzipped * 86400 / interval
     lines += [
-        "",
-        f"Disk use at one fetch every {interval:g} s: about {human_bytes(per_day * 30)} "
-        f"per 30 days, {human_bytes(per_day * 90)} per 90 days, if every snapshot were this size.",
-        "Size follows how many vehicles are in service, so after a day of logging, "
-        "run report for the real rate.",
+        (
+            f"Disk use at one fetch every {interval:g} s: about {human_bytes(per_day * 30)} "
+            f"per 30 days, {human_bytes(per_day * 90)} per 90 days, if every snapshot were this size."
+        ),
+        (
+            "Size follows how many vehicles are in service, so after a day of logging, "
+            "run report for the real rate."
+        ),
     ]
     return "\n".join(lines)
 
