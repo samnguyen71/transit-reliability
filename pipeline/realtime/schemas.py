@@ -126,3 +126,57 @@ TABLES: dict[str, pa.Schema] = {
     "stop_time_updates": STOP_TIME_UPDATES,
     "vehicle_positions": VEHICLE_POSITIONS,
 }
+
+
+# Observed times (realtime.observe), one file per service date: OUT/<table>/<date>.parquet.
+# See OBSERVED_TIMES.md for what each column means.
+
+# One row per scheduled stop visit: a departure, or the arrival at the trip's last stop.
+VISITS = pa.schema([
+    _f("service_date", pa.date32(), False),
+    _f("trip_id", pa.string(), False),     # canonical (gtfs.canonical_trip_id)
+    _f("route_id", pa.string()),
+    _f("direction_id", pa.int32()),
+    _f("stop_sequence", pa.int32(), False),
+    _f("stop_id", pa.string(), False),
+    _f("event", pa.string(), False),       # departure, or arrival at the last stop
+    _f("scored", pa.bool_(), False),       # timepoint departure or last-stop arrival
+    _f("scheduled", TS),
+    _f("status", pa.string(), False),      # observed, cancelled, skipped, no_data, lost, not_seen
+    _f("observed", TS),
+    _f("delay_s", pa.int32()),             # observed - scheduled
+    _f("source", pa.string()),             # tu, vp, tu_only, vp_stopped, vp_position
+    _f("lo", TS),                          # the VP bracket (lo, hi]
+    _f("hi", TS),
+    _f("tu_time", TS),                     # TU's recorded time, kept even when not used
+    _f("disagree", pa.bool_()),            # TU time outside the bracket ±60 s
+    _f("tu_gap", pa.bool_()),              # bracket overlaps a TripUpdates gap
+    _f("vehicle_id", pa.string()),
+])
+
+# The feed gaps the statuses were judged against.
+GAPS = pa.schema([
+    _f("feed", pa.string(), False),
+    _f("start", TS, False),                # last fresh feed time before the gap
+    _f("end", TS, False),                  # first fresh feed time after it
+    _f("seconds", pa.int32(), False),
+])
+
+# Trips in realtime with this start_date that aren't in the schedule (ADDED, or unknown).
+UNSCHEDULED = pa.schema([
+    _f("trip_id", pa.string(), False),
+    _f("start_date", pa.string(), False),
+    _f("route_id", pa.string()),
+    _f("relationships", pa.string()),      # TU trip schedule_relationships seen, comma-separated
+    _f("in_tu", pa.bool_(), False),
+    _f("in_vp", pa.bool_(), False),
+    _f("first_seen", TS),
+    _f("last_seen", TS),
+    _f("vehicle_id", pa.string()),
+])
+
+OBSERVED_TABLES: dict[str, pa.Schema] = {
+    "visits": VISITS,
+    "gaps": GAPS,
+    "unscheduled": UNSCHEDULED,
+}

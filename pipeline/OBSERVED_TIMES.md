@@ -29,7 +29,8 @@ any comparison with the schedule.
   (the logger has already dropped byte-identical downloads).
 - **Duplicate trips:** if a trip appears twice in one snapshot with different contents,
   skip that trip in that snapshot and count it.
-- **Vehicle reports:** a `timestamp` of 0 means unknown (store NULL). A report whose
+- **Vehicle reports:** a `timestamp` of 0 means unknown (stored NULL). Such a report
+  can't be placed in time, so the rule leaves it out and counts it. A report whose
   timestamp isn't newer than that vehicle's last one is not new evidence.
 - **Times:** use the feed's own timestamps (header, vehicle), never the fetch time.
 
@@ -96,12 +97,39 @@ Each visit gets exactly one status:
 | `observed` | time, lo/hi and source known | on-time score |
 | `cancelled` | trip `CANCELED`/`DELETED` and never seen running | service delivered (failure) |
 | `skipped` | stop update `SKIPPED` | service delivered (failure) |
-| `no_data` | the bracket overlaps a feed gap | coverage only |
-| `lost` | evidence ends before the stop (vehicle stopped reporting, trip vanished) | coverage only |
+| `no_data` | a feed gap explains the missing evidence (below) | coverage only |
+| `lost` | the trip was seen, but not around this stop: its evidence starts after the stop or ends before it, with no gap to explain that | coverage only |
 | `not_seen` | trip never in realtime while the feed was covered | coverage only |
 
 Coverage statuses are reported, never counted as late or missed. Added trips, or trips
-not in any loaded static version, go to `unscheduled_trips` and aren't scored.
+not in the static version used for the date, go to the `unscheduled` table and aren't
+scored.
+
+How each visit is decided, in this order:
+
+1. **`skipped`** if the stop's last fresh TripUpdates listing says `SKIPPED`. This wins
+   over VehiclePositions, which shows a bus passing a stop it skips the same way as one
+   it serves.
+2. **`cancelled`** if the trip was `CANCELED` or `DELETED` in a fresh snapshot and never
+   ran: no vehicle report and no recorded TU time. A trip that ran anyway is judged on
+   its evidence like any other.
+3. **`not_seen` or `no_data`** if the trip is in neither feed: `no_data` if its scheduled
+   span overlaps a gap in either feed.
+4. **Otherwise from the evidence.** A departure bracket that overlaps a VehiclePositions
+   gap is `no_data`, with `lo`, `hi` and `tu_time` kept. Where there is no bracket:
+   - evidence that stops or starts within 90 s of a VehiclePositions gap is `no_data`
+     (the feed cut it short);
+   - otherwise it is `lost` (the vehicle did).
+
+   For a last-stop arrival, the same applies to its bracket and to the search window.
+
+Two more columns:
+
+- **`tu_gap`:** set when a bracket overlaps a TripUpdates gap, so the disagreement report
+  can leave those departures out. A TripUpdates gap alone never makes a visit `no_data`:
+  VehiclePositions carries it.
+- **The last-stop search start:** the `hi` of the second-to-last stop's departure
+  bracket, even when its `lo` is missing (the bus was first seen already past that stop).
 
 ## Thresholds
 
@@ -155,11 +183,56 @@ not in any loaded static version, go to `unscheduled_trips` and aren't scored.
   run searched from 10 min before to 30 min after, without the start limit. The
   limits above will lower the count slightly.
 
+## Evidence: gaps (2026-10-12 to 11-10, the first parsed month)
+
+- **Polling is complete:** 2,880 polls a day per feed. Four days lost one poll each
+  (logger restarts), and 10-12 lost about 36 minutes on both feeds with no poll lines
+  at all.
+- **Missing snapshots are nearly all a frozen feed:** the same bytes came back
+  (`duplicate`), not an error. There were only a handful of network or HTTP errors in
+  the month. A frozen feed still answers while its data goes stale, so gaps are measured
+  from the feed's own timestamps, never from poll results.
+- **Nightly:** 3 TripUpdates and 4 VehiclePositions duplicates around the 03:00
+  changeover. That leaves the longest stretch without a fresh snapshot at 2.0 and
+  2.5 minutes, both over the 90 s gap threshold, so it is marked as a gap every night.
+- **Longer freezes:** TripUpdates froze for 77 minutes on 10-20 (155 duplicates) and
+  6 minutes on 10-18, while VehiclePositions stayed under 3 minutes on both days. The
+  feeds fail separately, which is why gaps are kept per feed.
+- **Short freezes:** some days have scattered duplicates (VehiclePositions 46 on 10-19
+  and 33 on 10-22, TripUpdates 35 on 10-21), but the longest stretch stayed at 2.5 min.
+
+## Running it
+
+From `pipeline/`, with `DATABASE_URL` set and the static feeds loaded:
+
+    python -m realtime.observe ../data/parsed ../data/observed [--date YYYY-MM-DD] [--force]
+
+- **Inputs:** a service date reads the parsed UTC days D and D+1 of both feeds.
+- **Which dates:** without `--date`, every date with both days parsed.
+- **Outputs:** `visits`, `gaps` and `unscheduled`, one file each per date (schema in
+  `realtime/schemas.py`).
+- **Metadata:** each file records `rule_version`, the static `feed_id` used, and the
+  cleaning counts (`stats`).
+- **Reruns:** a date is redone only when the rule version, the static feed or its parsed
+  input changes, or with `--force`.
+
+The code:
+- the rule is in `realtime/rules.py` (no I/O; `tests/test_rules.py` has one test per
+  edge case);
+- reading the Parquet is in `realtime/evidence.py`;
+- the driver is `realtime/observe.py`.
+
 ## To watch
 
 - **Last-stop limits:** how much the start and end limits change the 88%, and whether
   `lost` last stops cluster on some routes (a skewed sample would bias the arrival
   score).
 - **The weekly disagreement report:** record its numbers here with the rule version.
+- **The first real run:**
+  - how many visits are `no_data` from the nightly gap;
+  - whether 10-20's TripUpdates freeze shows up as `vp` instead of `tu` sources rather
+    than as `no_data`;
+  - how often the cleaning counts (conflicting trip copies, reports with timestamp 0)
+    occur.
 - **Each new timetable version** (next expected around 2026-11-30): rerun
   `feed_profile.py` with the new static zip and check these numbers still hold.
