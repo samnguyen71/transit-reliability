@@ -12,3 +12,11 @@ services:
       options:  # keep Docker's own log files from filling the disk
         max-size: "10m"
         max-file: "3"
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+
