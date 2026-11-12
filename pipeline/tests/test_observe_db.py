@@ -67,6 +67,12 @@ def test_main_end_to_end(conn, feed_id, scratch_dsn, tmp_path, monkeypatch):
     # The night trips ran when no snapshots were logged: no data, not "not seen".
     assert {v["NIGHT", i]["status"] for i in (1, 2, 3)} == {"no_data"}
 
+    # A database without the gtfs schema gets a clear message, not a traceback.
+    url = scratch_dsn.replace(f"dbname={conn.info.dbname}", "dbname=template1")
+    monkeypatch.setenv("DATABASE_URL", url)
+    assert observe.main([str(parsed), str(out), "--date", "2026-11-05"]) == 2
+    monkeypatch.setenv("DATABASE_URL", scratch_dsn)
+
     # A second run finds the date done and writes nothing.
     before = (out / "visits" / "2026-11-05.parquet").stat().st_mtime_ns
     assert observe.main([str(parsed), str(out), "--date", "2026-11-05"]) == 0

@@ -299,8 +299,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     feeds = (args.tu_feed, args.vp_feed)
     failures = 0
-    con = evidence.connect(args.memory_limit, args.out / "_tmp")
-    with psycopg.connect(url) as conn:
+    # autocommit: these are read-only queries, and one failing must not leave the
+    # connection in an aborted transaction that fails every later date too.
+    with psycopg.connect(url, autocommit=True) as conn:
+        if conn.execute("SELECT to_regclass('gtfs.feed')").fetchone()[0] is None:
+            print("No gtfs schema in this database. Run sql/01_schema.sql and "
+                  "sql/02_functions.sql against it, then load the static feeds "
+                  "(python -m gtfsdb.load ZIP ...).", file=sys.stderr)
+            return 2
+        con = evidence.connect(args.memory_limit, args.out / "_tmp")
         for d in args.date or parsed_dates(args.parsed, feeds):
             feed_id = args.static_feed or pick_static_feed(conn, d)
             if feed_id is None:
