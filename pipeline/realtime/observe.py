@@ -8,8 +8,8 @@ service date this writes OUT_DIR/<table>/<date>.parquet for visits, gaps and uns
 
 - A service date's trips run into the next day, so it needs the parsed UTC days D and D+1
   of both feeds. Without --date, every date with both days parsed is done.
-- The static feed is the newest one fetched before the end of the date that runs service
-  on it, unless --static-feed says otherwise.
+- The static feed is the newest one that runs service on the date and was fetched before
+  the date began, unless --static-feed says otherwise (see pick_static_feed).
 - A date is skipped if its output was written by this rule version, from the same static
   feed, after its parsed input. --force redoes it.
 """
@@ -47,11 +47,17 @@ class Schedule:
 # Schedule (PostgreSQL) -----------------------------------------------------------------
 
 def pick_static_feed(conn, service_date: date) -> int | None:
+    """The static feed in effect on a service date: the newest one, among those that run
+    service on it, fetched before the date began (local midnight). A feed fetched during
+    the date didn't exist for its morning trips, so it is used only when no earlier one
+    covers the date (e.g. the first day logged)."""
     row = conn.execute("""
         SELECT f.feed_id FROM gtfs.feed f
         WHERE f.fetched_at < ((%(d)s::date + 1)::timestamp AT TIME ZONE f.timezone)
           AND EXISTS (SELECT 1 FROM gtfs.active_services(f.feed_id, %(d)s::date))
-        ORDER BY f.fetched_at DESC, f.feed_id DESC LIMIT 1
+        ORDER BY f.fetched_at < (%(d)s::date::timestamp AT TIME ZONE f.timezone) DESC,
+                 f.fetched_at DESC, f.feed_id DESC
+        LIMIT 1
     """, {"d": service_date}).fetchone()
     return row[0] if row else None
 

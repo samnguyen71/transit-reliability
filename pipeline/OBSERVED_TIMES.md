@@ -209,6 +209,10 @@ From `pipeline/`, with `DATABASE_URL` set and the static feeds loaded:
 
 - **Inputs:** a service date reads the parsed UTC days D and D+1 of both feeds.
 - **Which dates:** without `--date`, every date with both days parsed.
+- **Which static feed:** the newest one that runs service on the date and was fetched
+  before the date began (local midnight). DRT's zips are fetched around 15:10 local, so
+  a new one first applies the next day. A feed fetched during the date is used only if
+  no earlier one covers it.
 - **Outputs:** `visits`, `gaps` and `unscheduled`, one file each per date (schema in
   `realtime/schemas.py`).
 - **Metadata:** each file records `rule_version`, the static `feed_id` used, and the

@@ -20,6 +20,25 @@ def test_pick_static_feed(conn, feed_id):
     # The mini feed is the only one loaded; the loader tests roll their extra feeds back.
     assert observe.pick_static_feed(conn, THU) == feed_id
     assert observe.pick_static_feed(conn, date(2026, 10, 20)) is None  # before its calendar
+    # Fetched 08:00 Toronto on 10-26, its first day: the only feed, so used anyway.
+    assert observe.pick_static_feed(conn, date(2026, 10, 26)) == feed_id
+
+
+def test_feed_fetched_during_a_date_waits_for_the_next(conn, feed_id):
+    # A newer feed fetched 15:10 Toronto on Nov 5 (as DRT's often are): Nov 5's morning
+    # ran on the old one, so it takes over on Nov 6.
+    with conn.transaction(force_rollback=True):
+        new = conn.execute("""
+            INSERT INTO gtfs.feed (sha256, zip_path, fetched_at, timezone)
+            VALUES ('test-newer', 'newer.zip', '2026-11-05 20:10Z', 'America/Toronto')
+            RETURNING feed_id""").fetchone()[0]
+        conn.execute("""
+            INSERT INTO gtfs.calendar (feed_id, service_id, monday, tuesday, wednesday,
+                thursday, friday, saturday, sunday, start_date, end_date)
+            VALUES (%s, 'ALL', true, true, true, true, true, true, true,
+                    '2026-11-01', '2026-12-31')""", (new,))
+        assert observe.pick_static_feed(conn, THU) == feed_id
+        assert observe.pick_static_feed(conn, date(2026, 11, 6)) == new
 
 
 def test_load_schedule(conn, feed_id):
