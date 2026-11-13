@@ -145,7 +145,7 @@ VISITS = pa.schema([
     _f("status", pa.string(), False),      # observed, cancelled, skipped, no_data, lost, not_seen
     _f("observed", TS),
     _f("delay_s", pa.int32()),             # observed - scheduled
-    _f("source", pa.string()),             # tu, vp, tu_only, vp_stopped, vp_position
+    _f("source", pa.string()),             # tu, tu_gps, vp, tu_only, vp_stopped, vp_position
     _f("lo", TS),                          # the VP bracket (lo, hi]
     _f("hi", TS),
     _f("tu_time", TS),                     # TU's recorded time, kept even when not used

@@ -1,4 +1,4 @@
-"""Observed times for each scheduled stop visit, by rule v1 (OBSERVED_TIMES.md).
+"""Observed times for each scheduled stop visit, by rule v3 (OBSERVED_TIMES.md).
 
     python -m realtime.observe PARSED_DIR OUT_DIR [--date YYYY-MM-DD ...] [--force]
 
@@ -84,10 +84,13 @@ def build_trips(rows: list[tuple], service_date: date) -> list[Trip]:
     """rows: (trip_id, route_id, direction_id, stop_sequence, stop_id, arrival, departure,
     timepoint, lat, lon), ordered by trip and stop_sequence, times in POSIX seconds.
 
-    A departure is scored at a timepoint (GTFS: timepoint 1, or blank with times given)
-    and at the trip's first stop, if it has a scheduled time.
+    A departure is scored at a timepoint and at the trip's first stop, if it has a
+    scheduled time. A timepoint is timepoint 1. A blank counts as one (GTFS: times given
+    are exact) only in a feed that marks no timepoints at all: DRT's 2026-10-12 zip left
+    its non-timepoints blank, and the next zip marks exactly those stops 0.
     """
     start_date = service_date.strftime("%Y%m%d")
+    blank_is_exact = all(r[7] is None for r in rows)
     trips: list[Trip] = []
     current = None
     for trip_id, route_id, direction_id, seq, stop_id, arr, dep, tp, lat, lon in rows:
@@ -95,7 +98,7 @@ def build_trips(rows: list[tuple], service_date: date) -> list[Trip]:
             current = Trip((trip_id, start_date), route_id, direction_id, [])
             trips.append(current)
         first = not current.stops
-        exact = tp == 1 or (tp is None and dep is not None)
+        exact = tp == 1 or (tp is None and blank_is_exact)
         current.stops.append(Stop(seq, stop_id, arr, dep, dep is not None and (exact or first),
                                   lat, lon))
     return trips
@@ -270,7 +273,8 @@ def summary(service_date: date, tables: dict[str, pa.Table], stats: Counter, fee
     n = len(scored) or 1
     statuses = ", ".join(f"{k} {c / n:.1%}" for k, c in status.most_common())
     sources = Counter(v["source"][i] for i in scored if v["source"][i])
-    both = [i for i in range(len(v["status"])) if v["source"][i] in ("tu", "vp")
+    both = [i for i in range(len(v["status"])) if v["event"][i] == "departure"
+            and v["source"][i] in ("tu", "tu_gps", "vp", "vp_position")
             and v["tu_time"][i] is not None]
     disagree = sum(1 for i in both if v["disagree"][i])
     parts = [
@@ -295,6 +299,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tu-feed", default="trip_updates")
     ap.add_argument("--vp-feed", default="vehicle_positions")
     ap.add_argument("--memory-limit", default="250MB", help="for DuckDB (default 250MB)")
+    ap.add_argument("--threads", type=int, default=2,
+                    help="for DuckDB (default 2). Each thread buffers its own Parquet reads: "
+                         "on 22 threads, 250MB fails at once")
     args = ap.parse_args(argv)
 
     import psycopg  # only needed here, so the rest imports without a database driver
@@ -313,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
                   "sql/02_functions.sql against it, then load the static feeds "
                   "(python -m gtfsdb.load ZIP ...).", file=sys.stderr)
             return 2
-        con = evidence.connect(args.memory_limit, args.out / "_tmp")
+        con = evidence.connect(args.memory_limit, args.out / "_tmp", args.threads)
         for d in args.date or parsed_dates(args.parsed, feeds):
             feed_id = args.static_feed or pick_static_feed(conn, d)
             if feed_id is None:

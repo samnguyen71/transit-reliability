@@ -1,8 +1,15 @@
-# Observed times: rule v1
+# Observed times: rule v3
 
 How realtime snapshots become an observed time for each scheduled stop visit, and why.
 Every output row carries `rule_version`. Changing anything below means a new version
 and a rebuild, not results mixed across versions.
+
+- **v3 (2026-11-13):** GPS decides disagreements, and first stops go by position (see
+  "Departure from a stop" and "First real run").
+- **v2 (2026-11-13):** a blank `timepoint` is a timepoint only in a feed that marks none.
+  v1 followed the GTFS default (blank with times = exact), which scored every stop on
+  dates using the 2026-10-12 zip. That zip leaves non-timepoints blank, and the next
+  marks exactly those stops 0.
 
 ## What is scored
 
@@ -57,13 +64,32 @@ From the reports that count:
 1. **TU time:** `arrival.time` from the last fresh TripUpdates snapshot that listed the
    stop. Accept it only if it was already in the past at that snapshot, i.e. recorded,
    not predicted.
-2. **Agreement:** the TU time must be inside the VP departure bracket ±60 s.
-   - If it is, use the TU time (`source = tu`).
-   - If it isn't, use the bracket's upper end (`source = vp`, `disagree = true`). That's
-     the first time the evidence shows the bus had left.
-3. **One source only:** TU only gives `source = tu_only` (flagged); VP only gives
+2. **Agreement:** the TU time must be inside the VP departure bracket ±60 s. If it is,
+   use the TU time (`source = tu`).
+3. **Disagreement: GPS decides** (`disagree = true`). DRT's `current_stop_sequence`
+   sometimes stops advancing while the bus drives on, and TU is then right. To check,
+   place each of the trip's own reports at the trip's stop nearest its GPS position, and
+   build the same strict departure bracket from those positions.
+   - TU time inside the GPS bracket ±60 s: use it (`source = tu_gps`).
+   - Otherwise, if GPS has the bus already past the stop at the VP bracket's `lo`: VP's
+     bracket is stale and TU isn't backed either, so status `lost`.
+   - Otherwise use the VP bracket's upper end (`source = vp`), the first time the
+     evidence shows the bus had left.
+4. **One source only:** TU only gives `source = tu_only` (flagged); VP only gives
    `source = vp`.
-4. **Always store** the bracket bounds `lo` and `hi`.
+5. **Always store** the bracket bounds `lo` and `hi`.
+
+### The first stop of a trip
+
+Neither feed is used for the time. Both move on from the first stop while the bus is
+still waiting there. The departure is by position: the bracket runs from the last own
+report within **100 m** of the stop to the next one, the first beyond it, and the time is
+that upper end (`source = vp_position`). TU's time is stored, and `disagree` is set if it
+falls outside this bracket ±60 s.
+
+- A bus never reported within 100 m of the stop is `lost`, even with a TU time.
+- So is one whose reports end while it is still at the stop.
+- A feed gap gives `no_data`, the same as elsewhere.
 
 ## Arrival at the last stop
 
@@ -98,7 +124,7 @@ Each visit gets exactly one status:
 | `cancelled` | trip `CANCELED`/`DELETED` and never seen running | service delivered (failure) |
 | `skipped` | stop update `SKIPPED` | service delivered (failure) |
 | `no_data` | a feed gap explains the missing evidence (below) | coverage only |
-| `lost` | the trip was seen, but not around this stop: its evidence starts after the stop or ends before it, with no gap to explain that | coverage only |
+| `lost` | the trip was seen, but not around this stop: its evidence starts after the stop or ends before it, with no gap to explain that. Also a departure where GPS shows VP's bracket is stale and doesn't back TU's time | coverage only |
 | `not_seen` | trip never in realtime while the feed was covered | coverage only |
 
 Coverage statuses are reported, never counted as late or missed. Added trips, or trips
@@ -159,12 +185,12 @@ Two more columns:
 - **Vehicle data quirks:** 430 vehicle reports had timestamp 0; 925 stop_sequence
   backwards jumps; one vehicle still in the feed 4.5 h after its last report.
 
-- **When a bus passes without stopping and the sources disagree, VP is right.** Against
-  the whole bracket, 83.1% agree. In the 15.6% where TU is more than 60 s before VP's last
-  "not yet there" report, the bus's GPS position at that report shows it had not
-  reached the stop in 97.8% of cases (7,745); VP lagged in only 1.4%. DRT's TripUpdates
-  sometimes marks a stop it doesn't serve as passed early. Hence step 2 of the
-  departure rule: on disagreement, VP's bracket wins.
+- **Withdrawn (2026-11-13): "when the sources disagree, VP is right".** This said that in
+  97.8% of disagreements the bus's GPS showed it had not reached the stop at VP's last
+  "not yet there" report. The test (`feed_profile.where_was_the_bus`) labelled any
+  position not between the stop and the next one as "not yet at the stop", including a
+  bus far past it. See "First real run" below: the opposite holds. v3 replaced the rule
+  that rested on it.
 - **TU's departure field is not used.** Among passed stops it differs from the arrival
   field 32,148 times. Even then it's a departure, but a less accurate one: at stopped
   stops it matches the VP departure within 60 s for 86.9% (non-timepoints) and 75.2%
@@ -201,6 +227,56 @@ Two more columns:
 - **Short freezes:** some days have scattered duplicates (VehiclePositions 46 on 10-19
   and 33 on 10-22, TripUpdates 35 on 10-21), but the longest stretch stayed at 2.5 min.
 
+## First real run (2026-11-05 and 2026-10-20, rule v2)
+
+Both dates: 2,532 trips, 17,855 scored visits, 95% `observed`. Two parts of the rule
+don't hold, so no on-time numbers from v2 should be reported. Checked on 11-05 by GPS:
+the vehicle's position at the report in question, against the trip's own stops.
+
+- **Disagreements: VP's `current_stop_sequence` was stale, not TU early.** At VP's last
+  "not yet past" report, the trip's stop nearest the bus was already past the scored
+  stop in 929 of 975 scored disagreements (95%), and 6,215 of 6,411 others (97%). The bus
+  was a median 4.9 km away. The same test on departures where TU and VP agree puts the bus
+  before or at the stop in 97%, so the test itself holds up. Taking VP's `hi` made those
+  departures a median 14 min too late.
+- **First stops: both feeds move on before the bus does.** 87% of first-stop departures
+  are `tu_only` (VP has a `hi` but no `lo`, since nothing comes before stop 1), and TU's
+  time matches VP's `hi` to a median 2 s. At that report the bus is a median 28 m from
+  the stop, under its own `trip_id`. It first reports more than 100 m away a median 8 min
+  later for the 1,055 that looked early. By that movement, 10% leave more than a minute
+  early, not 44%.
+- **Last-stop arrivals:** 17.5-17.9% `lost`, not the 12% estimated, and skewed by route
+  (505: 68%, 502: 40%, 915: 37%).
+- **Gaps:** `no_data` is 0.1-0.3% of scored visits, mostly 02:00-03:59 local (the nightly
+  changeover). The 77-minute TripUpdates freeze dated 10-20 UTC was 21:52-23:09 local on
+  10-19, so it belongs to service date 10-19, which wasn't run.
+- **Cleaning counts:** conflicting trip copies 478 (11-05) and 697 (10-20); vehicle
+  reports with timestamp 0: 430 and 1.
+
+### What v3 changed (same two dates; figures for 11-05, 10-20 within 1 point)
+
+- **Checks behind the GPS rule**, on all departures, scored or not:
+  - Disagreements split into TU earlier than VP's bracket (7,148) and later (219).
+  - In the earlier group, GPS has the bus past the stop at `lo` in 99.5%, and TU's time
+    falls inside the GPS bracket ±60 s in 99% (6,962 of 7,029).
+  - In the later group, GPS shows no stale `lo`, so VP stands.
+- **Mid-route scored departures:** `tu` 84.0%, `tu_gps` 6.8%, `vp` 8.8%, `tu_only` 0.5%.
+  - 111 disagreements are now `lost`: the bus was already a median 9 km past the stop at
+    `lo`, and VP's `hi` came a median 24 min after GPS showed it past.
+  - The remaining `vp` departures without a TU time (1,063) do agree with GPS: VP's `hi`
+    is a median 48 s before the bus is first more than 100 m past the stop by GPS. They
+    really were late, by a median 10 min.
+- **First stops:** 94.1% `observed`, 4.7% `lost`, against 0.9% `lost` under v2 when TU
+  filled in. On time 71.5%, early 4.2%, late 24.3%; v2 had 33.7%, 44.0%, 22.3%.
+- **Mid-route timepoints are left as they are.** Where TU and VP agree, the bus is a
+  median 16 m from the stop at VP's `hi`, and first reports more than 100 m away a median
+  30 s after TU's time (one poll; p90 91 s). That's dwell, not the first-stop problem.
+- **On time, all scored observed visits:** 64.8% (11-05) and 64.7% (10-20).
+  - By kind on 11-05: first stops 71.5%, mid-route timepoints 62.4%, last-stop
+    arrivals 71.3%.
+  - Late is the main failure: 29.5% of mid-route timepoint departures are more than
+    5 min late.
+
 ## Running it
 
 From `pipeline/`, with `DATABASE_URL` set and the static feeds loaded:
@@ -219,6 +295,10 @@ From `pipeline/`, with `DATABASE_URL` set and the static feeds loaded:
   cleaning counts (`stats`).
 - **Reruns:** a date is redone only when the rule version, the static feed or its parsed
   input changes, or with `--force`.
+- **Memory:** DuckDB runs on `--threads` (default 2) within `--memory-limit` (default
+  250MB). Each thread buffers its own Parquet reads: with one per core (22 here), 250MB
+  fails at once. A date takes about 10 s and peaks around 330 MB for the whole process.
+  Don't run it on the logging VM (1 GB): it froze the VM for hours on 2026-11-12.
 
 The code:
 - the rule is in `realtime/rules.py` (no I/O; `tests/test_rules.py` has one test per
@@ -232,11 +312,15 @@ The code:
   `lost` last stops cluster on some routes (a skewed sample would bias the arrival
   score).
 - **The weekly disagreement report:** record its numbers here with the rule version.
-- **The first real run:**
-  - how many visits are `no_data` from the nightly gap;
-  - whether 10-20's TripUpdates freeze shows up as `vp` instead of `tu` sources rather
-    than as `no_data`;
-  - how often the cleaning counts (conflicting trip copies, reports with timestamp 0)
-    occur.
+- **Service date 10-19:** whether its 77-minute TripUpdates freeze shows up as `vp`
+  sources rather than `no_data`. It needs parsed day 10-19 as well as 10-20.
+- **First stops `lost` (4.7%):** whether they cluster at terminals whose stop coordinates
+  are more than 100 m from where buses wait.
+- **Loop routes:** where a trip passes near one of its own stops twice, the nearest stop
+  can be the wrong one, which sends a disagreement to `vp` or `lost`. Check those by
+  route.
+- **Mid-route early departures (8%):** TU's time comes a median 30 s before the bus is
+  first more than 100 m away. That's within a poll, but at −60 s it decides some
+  departures.
 - **Each new timetable version** (next expected around 2026-11-30): rerun
   `feed_profile.py` with the new static zip and check these numbers still hold.

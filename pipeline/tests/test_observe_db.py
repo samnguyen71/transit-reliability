@@ -80,7 +80,7 @@ def test_main_end_to_end(conn, feed_id, scratch_dsn, tmp_path, monkeypatch):
     assert visits.schema.metadata[b"static_feed_id"] == str(feed_id).encode()
     v = {(r["trip_id"], r["stop_sequence"]): r for r in visits.to_pylist()}
     assert len(v) == 10
-    assert (v["WK1", 1]["status"], v["WK1", 1]["source"]) == ("observed", "vp")
+    assert (v["WK1", 1]["status"], v["WK1", 1]["source"]) == ("observed", "vp_position")
     assert v["WK1", 2]["scored"] is False
     assert (v["WK1", 3]["status"], v["WK1", 3]["source"]) == ("observed", "vp_stopped")
     # The night trips ran when no snapshots were logged: no data, not "not seen".

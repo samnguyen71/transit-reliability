@@ -1,4 +1,4 @@
-"""Observed-times rule v1 (OBSERVED_TIMES.md), as pure functions.
+"""Observed-times rule v3 (OBSERVED_TIMES.md), as pure functions.
 
 Nothing here reads files or databases: the inputs are plain values, so every edge case can
 be tested with a handful of hand-built reports. realtime.evidence gathers the inputs from
@@ -12,11 +12,11 @@ from __future__ import annotations
 import math
 from bisect import bisect_left, bisect_right
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from itertools import pairwise
 
-RULE_VERSION = "1"
+RULE_VERSION = "3"
 
 AGREE_S = 60              # TU time accepted if inside the VP departure bracket ±60 s
 NEAR_M = 100.0            # "at the last stop" by position
@@ -97,7 +97,7 @@ class Visit:
     scheduled: int | None
     status: str             # observed, cancelled, skipped, no_data, lost, not_seen
     time: int | None = None
-    source: str | None = None   # tu, vp, tu_only, vp_stopped, vp_position
+    source: str | None = None   # tu, tu_gps, vp, tu_only, vp_stopped, vp_position
     lo: int | None = None
     hi: int | None = None
     tu_time: int | None = None  # TU's recorded time, kept even when not used
@@ -193,15 +193,23 @@ def clean_reports(rows: Iterable[tuple], alias: dict[str, str],
 
 
 class Track:
-    """A trip's own reports that have a stop_sequence, for the strict departure rule."""
+    """A trip's own reports that have a stop_sequence, for the strict departure rule.
 
-    def __init__(self, reports: list[Report]):
-        self.reports = [r for r in reports if r.seq is not None]
+    seqs, if given, replaces each report's current_stop_sequence (see gps_track); reports
+    whose entry is None are left out.
+    """
+
+    def __init__(self, reports: list[Report], seqs: list[int | None] | None = None):
+        if seqs is None:
+            seqs = [r.seq for r in reports]
+        pairs = [(r, s) for r, s in zip(reports, seqs, strict=True) if s is not None]
+        self.reports = [r for r, _ in pairs]
+        self.seq_of = {id(r): s for r, s in pairs}  # report -> the stop_sequence used for it
         # suffix[i] = lowest stop_sequence from report i on. It never decreases.
         self.suffix: list[int] = []
         low = math.inf
-        for r in reversed(self.reports):
-            low = min(low, r.seq)
+        for _, s in reversed(pairs):
+            low = min(low, s)
             self.suffix.append(low)
         self.suffix.reverse()
 
@@ -227,6 +235,24 @@ def distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     x = (lon2 - lon1) * k * math.cos((lat1 + lat2) / 2 * k)
     y = (lat2 - lat1) * k
     return 6_371_000 * math.hypot(x, y)
+
+
+def gps_track(trip: Trip, own: list[Report]) -> Track:
+    """The trip's own reports, each placed at the trip's stop nearest its GPS position
+    instead of at its current_stop_sequence. DRT's current_stop_sequence sometimes stops
+    advancing while the bus drives on; its position doesn't."""
+    if not trip.stops:
+        return Track([], [])
+    k = math.cos(trip.stops[0].lat * math.pi / 180)  # one scale for the whole trip
+    stops = [(s.seq, s.lat, s.lon * k) for s in trip.stops]
+    seqs: list[int | None] = []
+    for r in own:
+        if r.lat is None or r.lon is None:
+            seqs.append(None)
+            continue
+        x = r.lon * k
+        seqs.append(min(stops, key=lambda s: (s[1] - r.lat) ** 2 + (s[2] - x) ** 2)[0])
+    return Track(own, seqs)
 
 
 # The rule ------------------------------------------------------------------------------
@@ -255,20 +281,71 @@ def observe_trip(trip: Trip, ev: Evidence) -> list[Visit]:
     if key in ev.cancelled and not ran:
         return [blank(i, s, "cancelled") for i, s in enumerate(trip.stops)]
 
+    gps: list[Track] = []  # built on first use: only disagreements need it
+
+    def gps_lazy() -> Track:
+        if not gps:
+            gps.append(gps_track(trip, own))
+        return gps[0]
+
     visits = []
     for i, stop in enumerate(trip.stops):
         if i == last:
             prev = trip.stops[i - 1] if i > 0 else None
             visits.append(_last_stop(trip, stop, prev, track, own, tu.get(stop.seq), ev, span))
+            continue
+        if i == 0:
+            v = _first_departure(stop, own, tu.get(stop.seq), ev, span)
         else:
-            v = _departure(stop, track, tu.get(stop.seq), ev, span)
-            v.vehicle_id = v.vehicle_id or (own[-1].vehicle_id if own else None)
-            visits.append(v)
+            v = _departure(stop, track, gps_lazy, tu.get(stop.seq), ev, span)
+        v.vehicle_id = v.vehicle_id or (own[-1].vehicle_id if own else None)
+        visits.append(v)
     return visits
 
 
-def _departure(stop: Stop, track: Track, tu: TuStop | None, ev: Evidence,
-               span: tuple[int, int] | None) -> Visit:
+def _first_departure(stop: Stop, own: list[Report], tu: TuStop | None, ev: Evidence,
+                     span: tuple[int, int] | None) -> Visit:
+    """Departure from a trip's first stop, by position.
+
+    Both feeds move on from the first stop while the bus is still waiting there (a median
+    8 min early on 2026-11-05), so neither TU's time nor current_stop_sequence is used.
+    The bracket runs from the last own report within NEAR_M of the stop to the next one,
+    the first beyond it. TU's time is kept for the disagreement report.
+    """
+    v = Visit(stop.seq, stop.stop_id, "departure", stop.timepoint, stop.sched_dep, "")
+    v.tu_time = tu.recorded if tu else None
+    if tu is not None and tu.skipped:
+        v.status = "skipped"
+        return v
+    placed = [r for r in own if r.lat is not None and r.lon is not None]
+    lo = hi = None
+    for r in placed:
+        if distance_m(r.lat, r.lon, stop.lat, stop.lon) <= NEAR_M:
+            lo = r
+        elif lo is not None:
+            hi = r
+            break
+    v.lo, v.hi = (lo.t if lo else None), (hi.t if hi else None)
+    v.vehicle_id = (hi or lo).vehicle_id if (hi or lo) else None
+    if lo and hi:
+        v.tu_gap = overlaps(ev.tu_gaps, lo.t, hi.t)
+        if overlaps(ev.vp_gaps, lo.t, hi.t):
+            v.status = "no_data"
+        else:
+            v.status, v.time, v.source = "observed", hi.t, "vp_position"
+            v.disagree = (v.tu_time is not None
+                          and not lo.t - AGREE_S <= v.tu_time <= hi.t + AGREE_S)
+    elif lo:         # still at the stop when the evidence ends
+        v.status = "no_data" if near_gap(ev.vp_gaps, lo.t) else "lost"
+    elif placed:     # never seen at the stop: first seen after leaving, or GPS never near it
+        v.status = "no_data" if near_gap(ev.vp_gaps, placed[0].t) else "lost"
+    else:
+        v.status = "no_data" if span and overlaps(ev.vp_gaps, *span) else "lost"
+    return v
+
+
+def _departure(stop: Stop, track: Track, gps: Callable[[], Track], tu: TuStop | None,
+               ev: Evidence, span: tuple[int, int] | None) -> Visit:
     v = Visit(stop.seq, stop.stop_id, "departure", stop.timepoint, stop.sched_dep, "")
     lo, hi = track.departure(stop.seq)
     v.lo = lo.t if lo else None
@@ -284,6 +361,13 @@ def _departure(stop: Stop, track: Track, tu: TuStop | None, ev: Evidence,
             v.status = "no_data"
         elif v.tu_time is not None and lo.t - AGREE_S <= v.tu_time <= hi.t + AGREE_S:
             v.status, v.time, v.source, v.disagree = "observed", v.tu_time, "tu", False
+        elif v.tu_time is not None and _gps_agrees(gps(), stop.seq, v.tu_time):
+            # current_stop_sequence lagged behind the bus: GPS puts TU's time right.
+            v.status, v.time, v.source, v.disagree = "observed", v.tu_time, "tu_gps", True
+        elif v.tu_time is not None and gps().seq_of.get(id(lo), -1) > stop.seq:
+            # GPS has the bus past the stop at lo, so VP's bracket is stale, but it doesn't
+            # back TU's time either: no time to trust.
+            v.status, v.disagree = "lost", True
         else:
             v.status, v.time, v.source = "observed", hi.t, "vp"
             v.disagree = v.tu_time is not None
@@ -292,6 +376,12 @@ def _departure(stop: Stop, track: Track, tu: TuStop | None, ev: Evidence,
     else:
         v.status = _no_evidence(ev, lo, hi, span)
     return v
+
+
+def _gps_agrees(gps: Track, seq: int, t: int) -> bool:
+    """Is t inside the GPS departure bracket for the stop, ±AGREE_S?"""
+    lo, hi = gps.departure(seq)
+    return lo is not None and hi is not None and lo.t - AGREE_S <= t <= hi.t + AGREE_S
 
 
 def _no_evidence(ev: Evidence, lo: Report | None, hi: Report | None,

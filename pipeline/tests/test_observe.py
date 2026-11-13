@@ -78,7 +78,8 @@ class World:
                     pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)
 
 
-def stop(i: int) -> tuple[float, float]:
+def stop(i: float) -> tuple[float, float]:
+    """Stop i's coordinates; a fraction is that far along the way to the next stop."""
     return 43.90 + 0.01 * i, -78.86
 
 
@@ -97,7 +98,7 @@ def run_reports(t: int) -> tuple:
     for i in range(1, 5):
         arrive, leave = T0 + (i - 1) * 300 - 45, departed(i)
         if t < arrive:
-            return (i, "IN_TRANSIT_TO", None, None)
+            return (i, "IN_TRANSIT_TO", *stop(i - 0.6))
         if t < leave or i == 4:
             return (i, "STOPPED_AT", *stop(i))
     raise AssertionError
@@ -191,7 +192,8 @@ def test_observe_date_end_to_end(tmp_path, con):
     tables, stats = observe.observe_date(con, tmp_path, SERVICE, schedule_t1())
     v = {r["stop_sequence"]: r for r in tables["visits"].to_pylist()}
     for i in (1, 2, 3):
-        assert (v[i]["status"], v[i]["source"]) == ("observed", "tu"), v[i]
+        source = "vp_position" if i == 1 else "tu"   # first stops go by position
+        assert (v[i]["status"], v[i]["source"]) == ("observed", source), v[i]
         assert v[i]["observed"] == utc(departed(i)) and v[i]["delay_s"] == 15
     assert (v[4]["event"], v[4]["status"], v[4]["source"]) == ("arrival", "observed", "vp_stopped")
     assert v[4]["observed"] < utc(T0 + 900)                # arrived early: that's on time
@@ -248,7 +250,7 @@ def test_outputs_round_trip_and_skip(tmp_path, con):
     assert observe.is_done(out, parsed, SERVICE, 1, FEEDS)
     assert not observe.is_done(out, parsed, SERVICE, 2, FEEDS)   # another static feed
     back = pq.read_table(out / "visits" / "2026-11-05.parquet")
-    assert back.num_rows == 4 and back.schema.metadata[b"rule_version"] == b"1"
+    assert back.num_rows == 4 and back.schema.metadata[b"rule_version"] == observe.RULE_VERSION.encode()
     assert not list(out.rglob("*.tmp"))
 
 
@@ -256,11 +258,17 @@ def test_build_trips_scoring():
     rows = [
         ("A", "R", 0, 1, "S1", 100, 100, 0, 0.0, 0.0),        # first stop: scored anyway
         ("A", "R", 0, 2, "S2", None, None, 0, 0.0, 0.0),      # no time: not scored
-        ("A", "R", 0, 3, "S3", 300, 300, None, 0.0, 0.0),     # blank timepoint, times given
+        ("A", "R", 0, 3, "S3", 300, 300, 1, 0.0, 0.0),        # timepoint
         ("A", "R", 0, 4, "S4", 400, 400, 0, 0.0, 0.0),        # approximate
-        ("A", "R", 0, 5, "S5", 500, 500, 1, 0.0, 0.0),        # last stop
-        ("B", "R", 1, 1, "S5", 600, 600, 1, 0.0, 0.0),
+        ("A", "R", 0, 5, "S5", 500, 500, None, 0.0, 0.0),     # blank in a feed that marks them
+        ("A", "R", 0, 6, "S6", 600, 600, 1, 0.0, 0.0),        # last stop
+        ("B", "R", 1, 1, "S6", 700, 700, 1, 0.0, 0.0),
     ]
     trips = observe.build_trips(rows, SERVICE)
     assert [t.key for t in trips] == [("A", D), ("B", D)]
-    assert [s.timepoint for s in trips[0].stops] == [True, False, True, False, True]
+    assert [s.timepoint for s in trips[0].stops] == [True, False, True, False, False, True]
+
+    # A feed with no timepoints marked at all: times given are exact (GTFS).
+    blank = [(*r[:7], None, *r[8:]) for r in rows]
+    trips = observe.build_trips(blank, SERVICE)
+    assert [s.timepoint for s in trips[0].stops] == [True, False, True, True, True, True]

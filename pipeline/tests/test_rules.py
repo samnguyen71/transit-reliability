@@ -1,4 +1,4 @@
-"""realtime.rules: observed-times rule v1, one edge case per test. No files, no database.
+"""realtime.rules: observed-times rule v3, one edge case per test. No files, no database.
 
 The trip in most tests, T1 on 2026-11-05, has four stops five minutes apart, all
 timepoints, starting 08:00 Toronto (13:00Z). Stops are about 1.1 km apart, so only a report
@@ -25,7 +25,8 @@ T0 = 1793883600  # 2026-11-05 13:00:00Z
 KEY = ("T1", D)
 
 
-def stop_at(i: int) -> tuple[float, float]:
+def stop_at(i: float) -> tuple[float, float]:
+    """Stop i's coordinates; a fraction is that far along the way to the next stop."""
     return 43.90 + 0.01 * i, -78.86
 
 
@@ -45,14 +46,19 @@ def row(t, seq, stopped=False, trip="T1", vehicle="V1", at=None, start_date=D):
 
 
 def standard_run() -> list[tuple]:
-    """Stops at each stop for a minute, reports every 30 s around the stops."""
+    """Stops at each stop for a minute, reports every 30 s around the stops. Between stops
+    the bus is 40% of the way along (440 m from the nearer stop)."""
     rows = []
     for i in range(1, 5):
         t = T0 + (i - 1) * 300
-        rows += [row(t - 60, i), row(t - 30, i, True), row(t, i, True)]
+        rows += [row(t - 60, i, at=i - 0.4), row(t - 30, i, True, at=i), row(t, i, True, at=i)]
         if i < 4:
-            rows.append(row(t + 30, i + 1))
+            rows.append(row(t + 30, i + 1, at=i + 0.4))
     return rows
+
+
+def run_from(t: int) -> list[tuple]:
+    return [r for r in standard_run() if r[1] >= t]
 
 
 def evidence(rows=(), tu=None, cancelled=(), vp_gaps=(), tu_gaps=(), tu_seen=(),
@@ -72,19 +78,72 @@ def by_seq(visits):
 # Departures ----------------------------------------------------------------------------
 
 def test_tu_time_inside_the_bracket_is_used():
-    tu = {1: TuStop(seen_at=T0 + 40, time=T0 + 10, skipped=False)}
-    v = by_seq(observe_trip(make_trip(), evidence(standard_run(), tu)))[1]
-    assert (v.status, v.source, v.time) == ("observed", "tu", T0 + 10)
-    assert (v.lo, v.hi) == (T0, T0 + 30)
+    tu = {2: TuStop(seen_at=T0 + 340, time=T0 + 310, skipped=False)}
+    v = by_seq(observe_trip(make_trip(), evidence(standard_run(), tu)))[2]
+    assert (v.status, v.source, v.time) == ("observed", "tu", T0 + 310)
+    assert (v.lo, v.hi) == (T0 + 300, T0 + 330)
     assert v.disagree is False and v.scored and v.event == "departure"
     assert v.vehicle_id == "V1"
 
 
 def test_tu_time_outside_the_bracket_loses_to_vp():
+    # TU says stop 2 at T0+100; neither the stop_sequence nor GPS puts the bus there then.
     tu = {2: TuStop(seen_at=T0 + 400, time=T0 + 300 - 200, skipped=False)}
     v = by_seq(observe_trip(make_trip(), evidence(standard_run(), tu)))[2]
     assert (v.status, v.source, v.time) == ("observed", "vp", T0 + 330)
     assert v.disagree is True and v.tu_time == T0 + 100
+
+
+def test_stale_stop_sequence_loses_to_tu_when_gps_backs_it():
+    # current_stop_sequence stays at 2 while the bus drives on towards stop 3, then jumps.
+    rows = [r for r in standard_run() if r[1] <= T0 + 300] + [
+        row(T0 + 330, 2, at=2.4), row(T0 + 360, 2, at=2.7), row(T0 + 390, 2, at=2.9),
+        row(T0 + 420, 3, at=2.95)] + run_from(T0 + 540)
+    tu = {2: TuStop(seen_at=T0 + 400, time=T0 + 310, skipped=False)}
+    v = by_seq(observe_trip(make_trip(), evidence(rows, tu)))[2]
+    assert (v.lo, v.hi) == (T0 + 390, T0 + 420)   # stop_sequence's bracket, kept
+    assert (v.status, v.source, v.time, v.disagree) == ("observed", "tu_gps", T0 + 310, True)
+
+
+def test_stale_stop_sequence_with_tu_that_gps_does_not_back_is_lost():
+    # As above, but TU's time (T0+150) is before the bus even reached stop 2.
+    rows = [r for r in standard_run() if r[1] <= T0 + 300] + [
+        row(T0 + 330, 2, at=2.4), row(T0 + 360, 2, at=2.7), row(T0 + 390, 2, at=2.9),
+        row(T0 + 420, 3, at=2.95)] + run_from(T0 + 540)
+    tu = {2: TuStop(seen_at=T0 + 400, time=T0 + 150, skipped=False)}
+    v = by_seq(observe_trip(make_trip(), evidence(rows, tu)))[2]
+    assert (v.status, v.time, v.source, v.disagree) == ("lost", None, None, True)
+    assert (v.lo, v.hi, v.tu_time) == (T0 + 390, T0 + 420, T0 + 150)
+
+
+def test_first_stop_departs_when_the_bus_moves_not_when_the_feeds_say():
+    # Both feeds move on from stop 1 at T0-480 while the bus waits there until T0+90.
+    wait = [row(T0 - 600, 1, True, at=1)] + [row(t, 2, at=1) for t in range(T0 - 480, T0 + 91, 30)]
+    rows = wait + [row(T0 + 120, 2, at=1.4)] + run_from(T0 + 240)
+    tu = {1: TuStop(seen_at=T0 - 450, time=T0 - 470, skipped=False)}
+    v = by_seq(observe_trip(make_trip(), evidence(rows, tu)))[1]
+    assert (v.status, v.source, v.time) == ("observed", "vp_position", T0 + 120)
+    assert (v.lo, v.hi, v.tu_time, v.disagree) == (T0 + 90, T0 + 120, T0 - 470, True)
+    assert v.scored and v.vehicle_id == "V1"
+
+
+def test_first_stop_agreeing_tu_is_not_a_disagreement():
+    tu = {1: TuStop(seen_at=T0 + 40, time=T0 + 10, skipped=False)}
+    v = by_seq(observe_trip(make_trip(), evidence(standard_run(), tu)))[1]
+    assert (v.source, v.time, v.lo, v.hi, v.disagree) == ("vp_position", T0 + 30, T0, T0 + 30,
+                                                          False)
+
+
+def test_first_stop_never_seen_at_the_stop_is_lost_even_with_tu():
+    tu = {1: TuStop(seen_at=T0 + 40, time=T0 + 10, skipped=False)}
+    v = by_seq(observe_trip(make_trip(), evidence(run_from(T0 + 30), tu)))[1]
+    assert (v.status, v.time, v.tu_time) == ("lost", None, T0 + 10)
+
+
+def test_first_stop_bracket_over_a_gap_is_no_data():
+    rows = [r for r in standard_run() if not T0 < r[1] < T0 + 240]
+    v = by_seq(observe_trip(make_trip(), evidence(rows, vp_gaps=[(T0 + 10, T0 + 230)])))[1]
+    assert (v.status, v.lo, v.hi, v.time) == ("no_data", T0, T0 + 240, None)
 
 
 def test_tu_prediction_is_not_a_recorded_time():
@@ -97,8 +156,9 @@ def test_tu_prediction_is_not_a_recorded_time():
 def test_tu_only_trip_is_flagged_and_last_stop_lost():
     tu = {1: TuStop(T0 + 40, T0 + 5, False), 2: TuStop(T0 + 330, T0 + 305, False)}
     visits = by_seq(observe_trip(make_trip(), evidence((), tu)))
-    assert (visits[1].status, visits[1].source, visits[1].time) == ("observed", "tu_only", T0 + 5)
-    assert visits[1].lo is None and visits[1].hi is None
+    assert visits[1].status == "lost"        # TU's first-stop time is never used
+    assert (visits[2].status, visits[2].source, visits[2].time) == ("observed", "tu_only", T0 + 305)
+    assert visits[2].lo is None and visits[2].hi is None
     assert visits[3].status == "lost"        # no TU time, no vehicle
     assert visits[4].status == "lost" and visits[4].event == "arrival"
 
@@ -146,9 +206,10 @@ def test_bracket_across_a_gap_is_no_data_but_keeps_its_bounds():
 
 
 def test_tripupdates_gap_is_flagged_not_fatal():
-    v = by_seq(observe_trip(make_trip(), evidence(standard_run(),
-                                                  tu_gaps=[(T0 - 100, T0 + 20)])))[1]
-    assert (v.status, v.source, v.tu_gap) == ("observed", "vp", True)
+    visits = by_seq(observe_trip(make_trip(), evidence(standard_run(),
+                                                       tu_gaps=[(T0 - 100, T0 + 320)])))
+    assert (visits[2].status, visits[2].source, visits[2].tu_gap) == ("observed", "vp", True)
+    assert (visits[1].status, visits[1].tu_gap) == ("observed", True)
 
 
 def test_skipped_stop_wins_over_the_vehicle_passing_it():
@@ -158,12 +219,11 @@ def test_skipped_stop_wins_over_the_vehicle_passing_it():
 
 
 def test_report_going_back_moves_the_departure_later():
-    # The bus looked past stop 1 at T0+30, then reported heading to stop 1 again at T0+60.
-    rows = standard_run()
-    rows.insert(rows.index(row(T0 + 30, 2)) + 1, row(T0 + 60, 1))
-    rows.insert(rows.index(row(T0 + 60, 1)) + 1, row(T0 + 90, 2))
-    v = by_seq(observe_trip(make_trip(), evidence(rows)))[1]
-    assert (v.lo, v.hi) == (T0 + 60, T0 + 90)
+    # The bus looked past stop 2 at T0+330, then reported heading to stop 2 again at T0+360.
+    rows = [r for r in standard_run() if r[1] <= T0 + 330] + [
+        row(T0 + 360, 2), row(T0 + 390, 3)] + run_from(T0 + 540)
+    v = by_seq(observe_trip(make_trip(), evidence(rows)))[2]
+    assert (v.lo, v.hi) == (T0 + 360, T0 + 390)
 
 
 # Whole trips ---------------------------------------------------------------------------
