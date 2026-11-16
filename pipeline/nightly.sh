@@ -33,8 +33,24 @@ if [[ -z "$DATABASE_URL" ]]; then
     DATABASE_URL="postgresql://postgres:${pw}@127.0.0.1:5432/postgres"
 fi
 export DATABASE_URL
+# Otherwise Python buffers stdout in the journal while stderr isn't, and the log's order
+# is wrong: a date's error shows up before the summaries of dates done earlier.
+export PYTHONUNBUFFERED=1
 
 step() { echo "== $*"; }
+
+# The job's peak, as counted against the service's MemoryMax. It includes page cache
+# (Parquet just read), which the kernel reclaims before killing anything.
+report_peak() {
+    local cg dir peak swap
+    cg="$(sed -n 's/^0:://p' /proc/self/cgroup)"
+    dir="/sys/fs/cgroup${cg}"
+    [[ -r "$dir/memory.peak" ]] || return 0
+    peak=$(( $(cat "$dir/memory.peak") / 1048576 ))
+    swap=0
+    [[ -r "$dir/memory.swap.peak" ]] && swap=$(( $(cat "$dir/memory.swap.peak") / 1048576 ))
+    echo "== memory peak ${peak} MiB, swap peak ${swap} MiB"
+}
 
 run() {
     ping_hc start
@@ -72,5 +88,6 @@ run() {
 
 run
 status=$?
+report_peak
 ping_hc "$status"
 exit "$status"
