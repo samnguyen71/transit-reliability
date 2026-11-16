@@ -1,0 +1,13 @@
+# 00:30 UTC on day T: UTC day T-1 has just ended and can be parsed, which completes
+# service date T-2 (a date needs UTC days D and D+1). Fixed in UTC so daylight saving
+# doesn't move it, and well clear of the 03:30 backup in logger/README.md.
+
+[Unit]
+Description=Nightly transit reliability job
+
+[Timer]
+OnCalendar=*-*-* 00:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
