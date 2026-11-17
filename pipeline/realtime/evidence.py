@@ -82,14 +82,18 @@ def trip_updates(con, trip_paths: list[Path], stop_paths: list[Path], start_date
         CREATE OR REPLACE TEMP TABLE dup AS
         SELECT file, trip_id FROM ent GROUP BY ALL HAVING count(*) > 1
     """)
+    # A copy's content is its stop updates in order. list_sort on a struct led by
+    # update_index gives that order; list(... ORDER BY ...) would too, but DuckDB keeps a
+    # sort buffer per group for it, and a few thousand copies ran past memory_limit on
+    # busy weekdays (2026-11-09 and 11-10).
     con.execute("""
         CREATE OR REPLACE TEMP TABLE conflict AS
         WITH content AS (
             SELECT e.file, e.trip_id, e.entity_index,
-                   md5(coalesce(e.rel, '') || CAST(list(struct_pack(
-                       q := s.stop_sequence, id := s.stop_id, a := s.arrival_time,
-                       d := s.departure_time, r := s.schedule_relationship)
-                       ORDER BY s.update_index) AS VARCHAR)) AS h
+                   md5(coalesce(e.rel, '') || CAST(list_sort(list(struct_pack(
+                       i := s.update_index, q := s.stop_sequence, id := s.stop_id,
+                       a := s.arrival_time, d := s.departure_time,
+                       r := s.schedule_relationship))) AS VARCHAR)) AS h
             FROM ent e SEMI JOIN dup USING (file, trip_id)
             LEFT JOIN read_parquet(?) s ON s.file = e.file AND s.entity_index = e.entity_index
             GROUP BY e.file, e.trip_id, e.entity_index, e.rel
