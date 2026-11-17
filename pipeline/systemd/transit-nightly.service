@@ -3,7 +3,7 @@
 # /home/azureuser/transit-reliability.
 
 [Unit]
-Description=Transit reliability: load static feeds, parse, observe
+Description=Transit reliability: load static feeds, parse, observe, roll up
 Wants=network-online.target docker.service
 After=network-online.target docker.service
 

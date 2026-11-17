@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# The nightly job on the VM: load new static zips, parse finished UTC days, then
-# observe every service date that has both its days parsed. systemd runs it at 00:30 UTC
-# (systemd/transit-nightly.timer); setup is in OBSERVED_TIMES.md, "Nightly on the VM".
+# The nightly job on the VM: load new static zips, parse finished UTC days, observe
+# every service date that has both its days parsed, then roll the results up by route,
+# stop and hour. systemd runs it at 00:30 UTC (systemd/transit-nightly.timer); setup is
+# in OBSERVED_TIMES.md, "Nightly on the VM".
 #
 # Every step skips work already done, so a missed night is caught up by the next run.
 #
@@ -83,6 +84,9 @@ run() {
     # Observe even after a parse failure: dates whose days did parse still get done.
     step "observe"
     "$PYTHON" -m realtime.observe "$DATA/parsed" "$DATA/observed" --threads 1 || status=1
+    # Likewise: every date with a visits file gets its rollups, new or redone ones.
+    step "rollup"
+    "$PYTHON" -m realtime.rollup "$DATA/observed" "$DATA/rollups" || status=1
     return $status
 }
 

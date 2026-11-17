@@ -309,11 +309,32 @@ The code:
 - reading the Parquet is in `realtime/evidence.py`;
 - the driver is `realtime/observe.py`.
 
+### Rollups
+
+    python -m realtime.rollup ../data/observed ../data/rollups [--date YYYY-MM-DD] [--force]
+
+- **Tables:** `by_route` (route, direction), `by_stop` (stop, route) and `by_hour` (local
+  hour of the scheduled time), one file each per service date. Schema in
+  `realtime/schemas.py`.
+- **Grouping:** each row is split by `kind`: `first_stop`, `timepoint` or `last_stop`.
+- **Counts:** scored visits by status, plus on time, early and late, using the windows
+  under "What is scored".
+- **Slices are sums.** Counts add up across rows and dates, so a route's month is the sum
+  of its rows. The median and p90 delay are per row and don't add up.
+- **Reruns:** a date is redone when its visits file changes (a new observe run or rule
+  version) or the rollup version changes. It takes seconds and under 100 MB, with no
+  database.
+
+Example, on time by route over every date so far:
+
+    SELECT route_id, sum(on_time) / sum(observed) AS on_time
+    FROM read_parquet('data/rollups/by_route/*.parquet') GROUP BY route_id
+
 ### Nightly on the VM
 
-`nightly.sh` starts the database, loads new static zips, parses finished UTC days and
-observes every date that has both days parsed. Each step skips what's done, so a missed
-night is caught up. It runs at 00:30 UTC, so a morning shows service date T-2 (on
+`nightly.sh` starts the database, loads new static zips, parses finished UTC days,
+observes every date that has both days parsed, and rolls each observed date up (below).
+Each step skips what's done, so a missed night is caught up. It runs at 00:30 UTC, so a morning shows service date T-2 (on
 Tuesday, Sunday): service date D needs UTC day D+1, which ends at 19:00 local on D+1
 (20:00 in summer).
 
