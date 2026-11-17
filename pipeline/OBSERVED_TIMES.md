@@ -342,8 +342,8 @@ Once, on the VM:
        sudo systemctl start transit-nightly.service
        journalctl -u transit-nightly -n 50 --no-pager
 
-   The last line gives the run's memory peak. Above about 400 MB, or if the job is
-   killed at its 450M cap, resize the VM to 4 GiB (B2als v2).
+   The job's last `==` line gives its memory peak. Above about 400 MB, or if the job
+   is killed at its 450M cap, resize the VM to 4 GiB (B2als v2).
 
 Check on it: `systemctl list-timers transit-nightly.timer` (next and last run) and
 `journalctl -u transit-nightly --since yesterday`.
