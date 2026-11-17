@@ -1,0 +1,23 @@
+# The nightly job (pipeline/nightly.sh). Started by transit-nightly.timer.
+# Install: see OBSERVED_TIMES.md, "Nightly on the VM". Paths assume the repo is at
+# /home/azureuser/transit-reliability.
+
+[Unit]
+Description=Transit reliability: load static feeds, parse, observe
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=azureuser
+ExecStart=/bin/bash /home/azureuser/transit-reliability/pipeline/nightly.sh
+# Environment=PYTHON=/path/to/python   if the pipeline's venv isn't pipeline/.venv
+TimeoutStartSec=2h
+
+# The VM has 887 MiB and no room to thrash: past this cap the job is killed, and the
+# logger (and Postgres, which runs in Docker's own cgroup) keep going. The next night
+# catches up. A normal date peaks around 330 MB.
+MemoryMax=450M
+MemorySwapMax=256M
+Nice=10
+CPUWeight=50

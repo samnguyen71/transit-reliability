@@ -298,13 +298,55 @@ From `pipeline/`, with `DATABASE_URL` set and the static feeds loaded:
 - **Memory:** DuckDB runs on `--threads` (default 2) within `--memory-limit` (default
   250MB). Each thread buffers its own Parquet reads: with one per core (22 here), 250MB
   fails at once. A date takes about 10 s and peaks around 330 MB for the whole process.
-  Don't run it on the logging VM (1 GB): it froze the VM for hours on 2026-11-12.
+- **On the VM (887 MiB usable):** only through the nightly job below, one date at a time.
+  Uncapped and without swap, runs froze it twice (2026-11-12 19:39–20:45 UTC, 11-13
+  16:41–17:06 UTC): Postgres took 47 min to write 64 MB. Backfills and `--force` over
+  many dates go on a bigger machine; copy the Parquet up.
 
 The code:
 - the rule is in `realtime/rules.py` (no I/O; `tests/test_rules.py` has one test per
   edge case);
 - reading the Parquet is in `realtime/evidence.py`;
 - the driver is `realtime/observe.py`.
+
+### Nightly on the VM
+
+`nightly.sh` starts the database, loads new static zips, parses finished UTC days and
+observes every date that has both days parsed. Each step skips what's done, so a missed
+night is caught up. It runs at 00:30 UTC, so a morning shows service date T-2 (on
+Tuesday, Sunday): service date D needs UTC day D+1, which ends at 19:00 local on D+1
+(20:00 in summer).
+
+Once, on the VM:
+
+1. **Swap**, so running out of memory slows things down instead of freezing them:
+
+       sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+       sudo mkswap /swapfile && sudo swapon /swapfile
+       echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+       echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-swap.conf && sudo sysctl --system
+
+2. **Postgres's smaller cache** (`docker-compose.yml`): `git pull`, then
+   `docker compose up -d db`.
+3. **Optional alert:** a Healthchecks check with Period 1 day and Grace 2 hours, and its
+   URL in `.env` as `HC_NIGHTLY=...`. A failed run pings `/fail` right away.
+4. **Install the timer.** If the venv isn't `pipeline/.venv`, set `PYTHON` in the
+   service file first.
+
+       sudo cp pipeline/systemd/transit-nightly.* /etc/systemd/system/
+       sudo systemctl daemon-reload
+       sudo systemctl enable --now transit-nightly.timer
+
+5. **Test it now** and read the result:
+
+       sudo systemctl start transit-nightly.service
+       journalctl -u transit-nightly -n 50 --no-pager
+
+   The job's last `==` line gives its memory peak. Above about 400 MB, or if the job
+   is killed at its 450M cap, resize the VM to 4 GiB (B2als v2).
+
+Check on it: `systemctl list-timers transit-nightly.timer` (next and last run) and
+`journalctl -u transit-nightly --since yesterday`.
 
 ## To watch
 

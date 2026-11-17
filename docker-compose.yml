@@ -16,6 +16,9 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    # The default 128MB cache is more than the static schedule needs, and the VM has
+    # 887 MiB for everything, including the nightly job.
+    command: postgres -c shared_buffers=32MB
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}  # set in .env
