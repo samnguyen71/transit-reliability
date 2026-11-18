@@ -28,14 +28,14 @@ import pyarrow.parquet as pq
 
 from realtime.schemas import ROLLUP_TABLES
 
-ROLLUP_VERSION = "1"
+ROLLUP_VERSION = "2"
 EARLY_S = 60    # a departure more than this early is early
 LATE_S = 300    # more than this late is late (departures and last-stop arrivals)
 
 KEYS = {
     "by_route": "route_id, direction_id",
     "by_stop": "stop_id, route_id",
-    "by_hour": "hour",
+    "by_hour": "hour, route_id, direction_id",
 }
 
 

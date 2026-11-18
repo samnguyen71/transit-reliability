@@ -212,5 +212,6 @@ ROLLUP_TABLES: dict[str, pa.Schema] = {
                           _KIND, *_ROLLUP_COUNTS]),
     # hour: of the scheduled time, local (0-23). Trips after midnight stay on their
     # service date, under hours 0-3.
-    "by_hour": pa.schema([_DAY, _f("hour", pa.int32(), False), _KIND, *_ROLLUP_COUNTS]),
+    "by_hour": pa.schema([_DAY, _f("hour", pa.int32(), False), _f("route_id", pa.string()),
+                          _f("direction_id", pa.int32()), _KIND, *_ROLLUP_COUNTS]),
 }
