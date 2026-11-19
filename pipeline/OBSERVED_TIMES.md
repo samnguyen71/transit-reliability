@@ -314,13 +314,16 @@ The code:
     python -m realtime.rollup ../data/observed ../data/rollups [--date YYYY-MM-DD] [--force]
 
 - **Tables:** `by_route` (route, direction), `by_stop` (stop, route) and `by_hour` (local
-  hour of the scheduled time), one file each per service date. Schema in
+  hour of the scheduled time, route, direction), one file each per service date. Schema in
   `realtime/schemas.py`.
 - **Grouping:** each row is split by `kind`: `first_stop`, `timepoint` or `last_stop`.
 - **Counts:** scored visits by status, plus on time, early and late, using the windows
   under "What is scored".
 - **Slices are sums.** Counts add up across rows and dates, so a route's month is the sum
-  of its rows. The median and p90 delay are per row and don't add up.
+  of its rows. The median and p90 delay are per row and don't add up. `delay_hist` does:
+  observed visits in 1-minute delay bins from −5 to +30 min, plus one bin each for
+  earlier and later. Sum it element-wise over a slice and read that slice's median or p90
+  off it, to within a minute.
 - **Reruns:** a date is redone when its visits file changes (a new observe run or rule
   version) or the rollup version changes. It takes seconds and under 100 MB, with no
   database.

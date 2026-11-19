@@ -8,7 +8,8 @@ database: everything needed is in the visits file.
 
 - Scored visits only (OBSERVED_TIMES.md, "What is scored"). On time: a departure from
   EARLY_S early to LATE_S late; an arrival at the last stop no more than LATE_S late.
-- Counts add up across rows and dates. To get a route's month, sum its rows.
+- Counts add up across rows and dates. To get a route's month, sum its rows. The
+  median and p90 don't; delay_hist (1-minute bins) does, for quantiles over a slice.
 - A date is skipped if its rollups were made by this ROLLUP_VERSION from the visits file
   as it is now (same rule_version and written_at). --force redoes it.
 - Small: a day's visits are about 100,000 rows, so this runs in seconds in under 100 MB.
@@ -26,9 +27,9 @@ import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from realtime.schemas import ROLLUP_TABLES
+from realtime.schemas import HIST_BIN_S, HIST_BINS, HIST_HI_S, HIST_LO_S, ROLLUP_TABLES
 
-ROLLUP_VERSION = "2"
+ROLLUP_VERSION = "3"
 EARLY_S = 60    # a departure more than this early is early
 LATE_S = 300    # more than this late is late (departures and last-stop arrivals)
 
@@ -37,6 +38,21 @@ KEYS = {
     "by_stop": "stop_id, route_id",
     "by_hour": "hour, route_id, direction_id",
 }
+
+
+def _hist_sql() -> str:
+    """The delay_hist column: one count per bin, laid out as in realtime.schemas."""
+    obs = "status = 'observed'"
+    bins = [f"{obs} AND delay_s < {HIST_LO_S}"]
+    bins += [f"{obs} AND delay_s >= {lo} AND delay_s < {lo + HIST_BIN_S}"
+             for lo in range(HIST_LO_S, HIST_HI_S, HIST_BIN_S)]
+    bins.append(f"{obs} AND delay_s >= {HIST_HI_S}")
+    assert len(bins) == HIST_BINS
+    return "list_value(" + ", ".join(f"count(*) FILTER ({b})::INTEGER" for b in bins) + \
+        ") AS delay_hist"
+
+
+HIST_SQL = _hist_sql()
 
 
 def visits_path(observed: Path, d: date) -> Path:
@@ -97,7 +113,8 @@ def rollup_date(con, observed: Path, d: date, timezone: str) -> dict[str, pa.Tab
         round(quantile_cont(delay_s, 0.5) FILTER (status = 'observed'))::INTEGER
             AS median_delay_s,
         round(quantile_cont(delay_s, 0.9) FILTER (status = 'observed'))::INTEGER
-            AS p90_delay_s
+            AS p90_delay_s,
+        {HIST_SQL}
     """
     tables = {}
     for name, keys in KEYS.items():

@@ -185,9 +185,20 @@ OBSERVED_TABLES: dict[str, pa.Schema] = {
 # Rollups (realtime.rollup), one file per service date: OUT/<table>/<date>.parquet.
 # Scored visits only. Every count adds up across rows and dates, so any slice (a route
 # over a month, a stop across routes) is a sum; the delay quantiles are per row and don't.
+# delay_hist does: sum it element-wise over a slice and read that slice's quantiles off
+# it (to within a bin).
 # kind: first_stop (departure from the trip's first stop), timepoint (departure from a
 # later timepoint) or last_stop (arrival at the last stop). Rows of different kinds
 # never overlap.
+
+# delay_hist: observed visits by delay_s. Bin 0 is under HIST_LO_S; bins 1..35 are
+# [HIST_LO_S + (i-1)*HIST_BIN_S, HIST_LO_S + i*HIST_BIN_S), i.e. [-300, -240) ..
+# [1740, 1800); the last bin is HIST_HI_S or more. Its sum is `observed`.
+HIST_LO_S = -300
+HIST_HI_S = 1800
+HIST_BIN_S = 60
+HIST_BINS = (HIST_HI_S - HIST_LO_S) // HIST_BIN_S + 2  # 37: under, 35 minutes, over
+
 _ROLLUP_COUNTS = [
     _f("scheduled", pa.int32(), False),    # scored visits, all statuses
     _f("observed", pa.int32(), False),     # the on-time denominator
@@ -201,6 +212,7 @@ _ROLLUP_COUNTS = [
     _f("not_seen", pa.int32(), False),
     _f("median_delay_s", pa.int32()),      # of observed visits; NULL if none
     _f("p90_delay_s", pa.int32()),
+    _f("delay_hist", pa.list_(pa.int32(), HIST_BINS), False),  # see HIST_* above
 ]
 _DAY = _f("service_date", pa.date32(), False)
 _KIND = _f("kind", pa.string(), False)

@@ -7,7 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from realtime import rollup
-from realtime.schemas import ROLLUP_TABLES, VISITS
+from realtime.schemas import HIST_BINS, ROLLUP_TABLES, VISITS
 
 D = date(2026, 11, 5)
 T0 = int(datetime(2026, 11, 5, 13, 0, tzinfo=UTC).timestamp())  # 08:00 Toronto (EST)
@@ -74,15 +74,41 @@ def test_counts_kinds_and_edges(tmp_path):
     assert (tp["scheduled"], tp["observed"], tp["lost"], tp["skipped"]) == (2, 0, 1, 1)
     assert tp["median_delay_s"] is None
 
-    hours = {(x["hour"], x["kind"]): x["scheduled"] for x in read(out, "by_hour")}
-    assert hours == {(8, "first_stop"): 1, (8, "timepoint"): 1, (8, "last_stop"): 1,
-                     (9, "first_stop"): 1, (9, "timepoint"): 2, (9, "last_stop"): 1}
+    hours = {(x["hour"], x["route_id"], x["kind"]): x["scheduled"]
+             for x in read(out, "by_hour")}
+    assert hours == {(8, "R1", "first_stop"): 1, (8, "R1", "timepoint"): 1,
+                     (8, "R1", "last_stop"): 1, (9, "R2", "first_stop"): 1,
+                     (9, "R2", "timepoint"): 2, (9, "R2", "last_stop"): 1}
 
     stops = read(out, "by_stop")
     assert sum(x["scheduled"] for x in stops) == 7  # every scored visit once
     meta = pq.read_schema(out / "by_stop" / f"{D}.parquet").metadata
     assert meta[b"rollup_version"] == rollup.ROLLUP_VERSION.encode()
     assert meta[b"rule_version"] == b"3"
+
+
+def test_delay_histogram_bins(tmp_path):
+    observed, out = tmp_path / "observed", tmp_path / "rollups"
+    # Timepoints of one trip, at and around every kind of bin edge.
+    delays = [-301, -300, -61, -60, 0, 299, 300, 1799, 1800, 5000]
+    rows = [visit("T1", 1, 0)] + [visit("T1", i + 2, d) for i, d in enumerate(delays)]
+    rows.append(visit("T1", 99, 0, status="lost"))  # not observed: in no bin
+    write_visits(observed, rows)
+    assert rollup.main([str(observed), str(out)]) == 0
+
+    tp = next(x for x in read(out, "by_route") if x["kind"] == "timepoint")
+    hist = tp["delay_hist"]
+    assert len(hist) == HIST_BINS == 37
+    assert sum(hist) == tp["observed"] == len(delays)
+    # Bin i >= 1 starts at -300 + (i-1)*60 s; 0 is under -300 s, 36 is 1800 s or more.
+    assert {i: n for i, n in enumerate(hist) if n} == {
+        0: 1,                 # -301
+        1: 1,                 # -300
+        4: 1, 5: 1, 6: 1,     # -61 in [-120, -60), -60 in [-60, 0), 0 in [0, 60)
+        10: 1, 11: 1,         # 299 in [240, 300), 300 in [300, 360)
+        35: 1,                # 1799 in [1740, 1800)
+        36: 2,                # 1800 and 5000: over, and counted once each
+    }
 
 
 def test_skips_done_dates_and_redoes_after_a_new_observe(tmp_path):
