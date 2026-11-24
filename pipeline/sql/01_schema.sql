@@ -19,13 +19,14 @@ CREATE TABLE IF NOT EXISTS gtfs.agency (
 CREATE TABLE IF NOT EXISTS gtfs.routes (
   feed_id int REFERENCES gtfs.feed ON DELETE CASCADE, route_id text NOT NULL, agency_id text,
   route_short_name text, route_long_name text, route_type int NOT NULL,
+  route_color char(6),
   PRIMARY KEY (feed_id, route_id)
 );
 
 CREATE TABLE IF NOT EXISTS gtfs.stops (
   feed_id int REFERENCES gtfs.feed ON DELETE CASCADE, stop_id text, stop_name text NOT NULL,
   stop_lat double precision NOT NULL, stop_lon double precision NOT NULL,
-  parent_station text,
+  parent_station text, stop_code text,
   PRIMARY KEY (feed_id, stop_id)
 );
 
@@ -34,6 +35,7 @@ CREATE TABLE IF NOT EXISTS gtfs.trips (
   trip_id text,
   route_id text NOT NULL, service_id text NOT NULL,
   direction_id smallint, block_id text, shape_id text,
+  trip_headsign text,
   PRIMARY KEY (feed_id, trip_id)
 );
 
@@ -62,6 +64,13 @@ CREATE TABLE IF NOT EXISTS gtfs.calendar_dates (
   PRIMARY KEY (feed_id, service_id, date)
 );
 
+CREATE TABLE IF NOT EXISTS gtfs.shapes (
+  feed_id int REFERENCES gtfs.feed ON DELETE CASCADE, shape_id text,
+  shape_pt_lat double precision NOT NULL, shape_pt_lon double precision NOT NULL,
+  shape_pt_sequence int NOT NULL, shape_dist_traveled double precision,
+  PRIMARY KEY (feed_id, shape_id, shape_pt_sequence)
+);
+
 -- Known exceptions: trips the feed contains but that should be counted as another trip.
 -- The loader never deletes or edits rows from the files; it records the exception here
 -- (in the same transaction, from the loaded data), and downstream code reads it.
@@ -81,3 +90,6 @@ CREATE TABLE IF NOT EXISTS gtfs.trip_alias (
 CREATE INDEX IF NOT EXISTS trips_service_idx ON gtfs.trips (feed_id, service_id);        -- date → trips
 CREATE INDEX IF NOT EXISTS calendar_dates_date_idx ON gtfs.calendar_dates (feed_id, date); -- exceptions on a date
 CREATE INDEX IF NOT EXISTS stop_times_stop_idx ON gtfs.stop_times (feed_id, stop_id);    -- visits at a stop (Phase 2)
+ALTER TABLE gtfs.routes ADD COLUMN IF NOT EXISTS route_color char(6);
+ALTER TABLE gtfs.stops  ADD COLUMN IF NOT EXISTS stop_code text;
+ALTER TABLE gtfs.trips  ADD COLUMN IF NOT EXISTS trip_headsign text;
