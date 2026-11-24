@@ -106,6 +106,14 @@ EXPECTED = {
         "date",
         "exception_type",
     ],
+
+    "shapes.txt": [
+        "shape_id",
+        "shape_pt_lat",
+        "shape_pt_lon",
+        "shape_pt_sequence",
+        "shape_dist_traveled",
+    ],
 }
 
 # Foreign-key dependency execution order
@@ -115,6 +123,7 @@ FILE_ORDER = [
     "calendar_dates.txt",
     "routes.txt",
     "stops.txt",
+    "shapes.txt",
     "trips.txt",
     "stop_times.txt",
 ]
@@ -138,7 +147,7 @@ INSERT_STATEMENTS = {
     "stops.txt": sql.SQL("""
         INSERT INTO gtfs.stops (
             feed_id, stop_id, stop_name,
-            stop_lat, stop_lon, parent_station
+            stop_lat, stop_lon, parent_station, stop_code
         )
         SELECT
             %(feed)s,
@@ -146,14 +155,16 @@ INSERT_STATEMENTS = {
             stop_name,
             stop_lat::double precision,
             stop_lon::double precision,
-            NULLIF(parent_station, '')
+            NULLIF(parent_station, ''),
+            NULLIF(stop_code, '')
         FROM {stg};
     """),
 
     "routes.txt": sql.SQL("""
         INSERT INTO gtfs.routes (
             feed_id, route_id, agency_id,
-            route_short_name, route_long_name, route_type
+            route_short_name, route_long_name, route_type,
+            route_color
         )
         SELECT
             %(feed)s,
@@ -161,14 +172,32 @@ INSERT_STATEMENTS = {
             NULLIF(agency_id, ''),
             NULLIF(route_short_name, ''),
             NULLIF(route_long_name, ''),
-            route_type::int
+            route_type::int,
+            NULLIF(route_color, '')
+        FROM {stg};
+    """),
+
+    "shapes.txt": sql.SQL("""
+        INSERT INTO gtfs.shapes (
+            feed_id, shape_id,
+            shape_pt_lat, shape_pt_lon, shape_pt_sequence,
+            shape_dist_traveled
+        )
+        SELECT
+            %(feed)s,
+            shape_id,
+            shape_pt_lat::double precision,
+            shape_pt_lon::double precision,
+            shape_pt_sequence::int,
+            NULLIF(shape_dist_traveled, '')::double precision
         FROM {stg};
     """),
 
     "trips.txt": sql.SQL("""
         INSERT INTO gtfs.trips (
             feed_id, trip_id, route_id,
-            service_id, direction_id, block_id, shape_id
+            service_id, direction_id, block_id, shape_id,
+            trip_headsign
         )
         SELECT
             %(feed)s,
@@ -177,7 +206,8 @@ INSERT_STATEMENTS = {
             service_id,
             NULLIF(direction_id, '')::smallint,
             NULLIF(block_id, ''),
-            NULLIF(shape_id, '')
+            NULLIF(shape_id, ''),
+            NULLIF(trip_headsign, '')
         FROM {stg};
     """),
 
