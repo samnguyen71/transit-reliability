@@ -1,9 +1,14 @@
-# Observed times: rule v3
+# Observed times: rule v4
 
 How realtime snapshots become an observed time for each scheduled stop visit, and why.
 Every output row carries `rule_version`. Changing anything below means a new version
 and a rebuild, not results mixed across versions.
 
+- **v4 (2026-11-27):** a trip that starts at 24:00 or later is matched under the next
+  day's `start_date` (see "Trip instance"). v3 matched it under the service date, which
+  is the previous night's run of the same trip: about 250 scored visits a date (1.4%)
+  had `delay_s` near −86,400 (−3,300 on the fall-back night), which made N1/N2 and the
+  last runs of 902/915/916/917/121 look early.
 - **v3 (2026-11-13):** GPS decides disagreements, and first stops go by position (see
   "Departure from a stop" and "First real run").
 - **v2 (2026-11-13):** a blank `timepoint` is a timepoint only in a feed that marks none.
@@ -29,6 +34,13 @@ definition before reporting numbers as comparable to theirs.
 Everything is keyed by `(gtfs.canonical_trip_id(feed_id, trip_id), start_date)`, with
 realtime's `start_date` used unchanged (see KNOWN_EXCEPTIONS.md). This happens before
 any comparison with the schedule.
+
+DRT's `start_date` is the local calendar date the run starts on, so the schedule side
+uses the same: the service date, or the next day for a trip whose first scheduled time
+is 24:00 or later (`observe.load_schedule`). For service date D, realtime's
+`(trip, D)` for such a trip is D−1's run and is left out (`evidence.StartDates`).
+Checked on 2026-11-05 (feed 3): all 36 trips starting at or after 24:00 appear under
+both 20261105 (seen 23:00–00:53 local on 11-04/05) and 20261106 (the same, a day later).
 
 ## Cleaning, before any rule
 

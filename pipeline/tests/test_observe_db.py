@@ -46,7 +46,9 @@ def test_load_schedule(conn, feed_id):
     trips = {t.key[0]: t for t in s.trips}
     assert sorted(trips) == ["EARLY", "EARLY_ODD", "NIGHT", "WK1"]  # EARLY_LATE is an alias
     assert s.alias == {"EARLY_LATE": "EARLY"}
-    assert all(t.key[1] == "20261105" for t in s.trips)
+    # The run's calendar date, as DRT's realtime sends it: EARLY_ODD starts at 24:30.
+    assert {k: t.key[1] for k, t in trips.items()} == {
+        "EARLY": "20261105", "EARLY_ODD": "20261106", "NIGHT": "20261105", "WK1": "20261105"}
 
     wk1 = trips["WK1"].stops
     assert [st.seq for st in wk1] == [1, 2, 3]

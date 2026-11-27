@@ -19,6 +19,7 @@ from realtime.schemas import TABLES
 SERVICE = date(2026, 11, 5)
 DAYS = ["2026-11-05", "2026-11-06"]
 D = "20261105"
+NEXT = "20261106"
 T0 = 1793883600  # 2026-11-05 13:00:00Z, 08:00 Toronto
 FEEDS = ("trip_updates", "vehicle_positions")
 
@@ -59,12 +60,13 @@ class World:
                     "schedule_relationship": rel})
 
     def vp(self, header: int, reports: list[tuple]) -> None:
-        """reports: (vehicle_id, t, trip_id, seq, status, lat, lon)"""
+        """reports: (vehicle_id, t, trip_id, seq, status, lat, lon[, start_date])"""
         name, day = self._snapshot("vehicle_positions", header)
-        for i, (vehicle, t, trip_id, seq, status, lat, lon) in enumerate(reports):
+        for i, (vehicle, t, trip_id, seq, status, lat, lon, *start) in enumerate(reports):
             self.rows[("vehicle_positions", "vehicle_positions", day)].append({
                 "file": name, "header_ts": utc(header), "entity_index": i,
-                "trip_id": trip_id, "start_date": D, "vehicle_id": vehicle,
+                "trip_id": trip_id, "start_date": start[0] if start else D,
+                "vehicle_id": vehicle,
                 "timestamp": utc(t) if t else None, "current_stop_sequence": seq,
                 "current_status": status, "latitude": lat, "longitude": lon})
 
@@ -83,10 +85,10 @@ def stop(i: float) -> tuple[float, float]:
     return 43.90 + 0.01 * i, -78.86
 
 
-def schedule_t1() -> observe.Schedule:
+def schedule_t1(start_date: str = D) -> observe.Schedule:
     stops = [Stop(i, f"S{i}", T0 + (i - 1) * 300, T0 + (i - 1) * 300, True, *stop(i))
              for i in range(1, 5)]
-    return observe.Schedule(1, [Trip(("T1", D), "R1", 0, stops)], {})
+    return observe.Schedule(1, [Trip(("T1", start_date), "R1", 0, stops)], {})
 
 
 def departed(i: int) -> int:
@@ -104,14 +106,14 @@ def run_reports(t: int) -> tuple:
     raise AssertionError
 
 
-def normal_day(w: World, until: int = T0 + 1500) -> None:
+def normal_day(w: World, until: int = T0 + 1500, start_date: str = D) -> None:
     """Both feeds every 30 s from T0-600; T1 runs as in run_reports."""
     for h in range(T0 - 600, until, 30):
         seq, status, lat, lon = run_reports(h - 15)
-        w.vp(h, [("V1", h - 15, "T1", seq, status, lat, lon)])
+        w.vp(h, [("V1", h - 15, "T1", seq, status, lat, lon, start_date)])
         stops = [(i, f"S{i}", departed(i), "SCHEDULED") for i in range(1, 5)
                  if departed(i) > h - 60]
-        w.tu(h, [{"trip_id": "T1", "stops": stops}] if stops else [])
+        w.tu(h, [{"trip_id": "T1", "start_date": start_date, "stops": stops}] if stops else [])
 
 
 @pytest.fixture
@@ -128,7 +130,8 @@ def gather_tu(con, parsed):
     con.register("fresh_tu", pa.table({"file": [f for f, _ in kept]}))
     paths = [[evidence.table_path(parsed, "trip_updates", t, d) for d in DAYS]
              for t in ("trip_updates", "stop_time_updates")]
-    return evidence.trip_updates(con, *paths, D, {"T1_LATE": "T1"}, stats), stats
+    return evidence.trip_updates(con, *paths, evidence.StartDates(D), {"T1_LATE": "T1"},
+                                 stats), stats
 
 
 # Evidence ------------------------------------------------------------------------------
@@ -179,7 +182,34 @@ def test_cancellation_alias_and_skipped(tmp_path, con):
     assert info["T2"]["relationships"] == ["CANCELED"]
 
 
+def test_start_dates():
+    dates = evidence.StartDates(D, NEXT, frozenset({"LATE"}))
+    assert ("T1", D) in dates and ("LATE", NEXT) in dates
+    assert ("LATE", D) not in dates   # the previous service date's run
+    assert ("T1", NEXT) not in dates  # the next service date's run
+    assert (dates.of("T1"), dates.of("LATE")) == (D, NEXT)
+
+
 # A whole service date ------------------------------------------------------------------
+
+
+def test_trip_after_midnight_matches_next_days_start_date(tmp_path, con):
+    """T1 starts at 24:00 or later: DRT sends it under the next calendar date. The run
+    under the service date itself is the previous night's, frozen 24 h earlier; it must
+    neither be matched (it was scored about -86,400 s) nor listed as unscheduled."""
+    w = World()
+    normal_day(w, start_date=NEXT)
+    night_before = [(i, f"S{i}", departed(i) - 86400, "SCHEDULED") for i in range(1, 5)]
+    w.tu(T0 - 900, [{"trip_id": "T1", "start_date": D, "stops": night_before}])
+    w.vp(T0 - 900, [("V7", T0 - 905, "T1", 4, "STOPPED_AT", *stop(4), D)])
+    w.write(tmp_path)
+
+    tables, stats = observe.observe_date(con, tmp_path, SERVICE, schedule_t1(NEXT))
+    v = {r["stop_sequence"]: r for r in tables["visits"].to_pylist()}
+    assert [(v[i]["status"], v[i]["delay_s"]) for i in (1, 2, 3)] == [("observed", 15)] * 3
+    assert v[4]["status"] == "observed" and v[4]["vehicle_id"] == "V1"
+    assert tables["unscheduled"].num_rows == 0
+    assert stats["trips starting after midnight"] == 1
 
 def test_observe_date_end_to_end(tmp_path, con):
     w = World()
@@ -256,16 +286,17 @@ def test_outputs_round_trip_and_skip(tmp_path, con):
 
 def test_build_trips_scoring():
     rows = [
-        ("A", "R", 0, 1, "S1", 100, 100, 0, 0.0, 0.0),        # first stop: scored anyway
-        ("A", "R", 0, 2, "S2", None, None, 0, 0.0, 0.0),      # no time: not scored
-        ("A", "R", 0, 3, "S3", 300, 300, 1, 0.0, 0.0),        # timepoint
-        ("A", "R", 0, 4, "S4", 400, 400, 0, 0.0, 0.0),        # approximate
-        ("A", "R", 0, 5, "S5", 500, 500, None, 0.0, 0.0),     # blank in a feed that marks them
-        ("A", "R", 0, 6, "S6", 600, 600, 1, 0.0, 0.0),        # last stop
-        ("B", "R", 1, 1, "S6", 700, 700, 1, 0.0, 0.0),
+        ("A", "R", 0, 1, "S1", 100, 100, 0, 0.0, 0.0, D),        # first stop: scored anyway
+        ("A", "R", 0, 2, "S2", None, None, 0, 0.0, 0.0, D),      # no time: not scored
+        ("A", "R", 0, 3, "S3", 300, 300, 1, 0.0, 0.0, D),        # timepoint
+        ("A", "R", 0, 4, "S4", 400, 400, 0, 0.0, 0.0, D),        # approximate
+        ("A", "R", 0, 5, "S5", 500, 500, None, 0.0, 0.0, D),     # blank in a feed that marks them
+        ("A", "R", 0, 6, "S6", 600, 600, 1, 0.0, 0.0, D),        # last stop
+        ("B", "R", 1, 1, "S6", 700, 700, 1, 0.0, 0.0, NEXT),     # starts after midnight
+        ("C", "R", 1, 1, "S6", None, None, 1, 0.0, 0.0, None),   # no times at all
     ]
     trips = observe.build_trips(rows, SERVICE)
-    assert [t.key for t in trips] == [("A", D), ("B", D)]
+    assert [t.key for t in trips] == [("A", D), ("B", NEXT), ("C", D)]
     assert [s.timepoint for s in trips[0].stops] == [True, False, True, False, False, True]
 
     # A feed with no timepoints marked at all: times given are exact (GTFS).

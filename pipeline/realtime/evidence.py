@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import duckdb
@@ -23,6 +24,34 @@ from realtime.rules import (
     find_gaps,
     fresh_snapshots,
 )
+
+
+@dataclass(frozen=True)
+class StartDates:
+    """Which realtime (trip_id, start_date) pairs are a service date's runs.
+
+    DRT sends the local calendar date a run starts on (KNOWN_EXCEPTIONS.md), so a trip
+    that starts at 24:00 or later comes under the next day. Its pair under the service
+    date itself is the previous service date's run of the same trip: left out, or it
+    would be scored about 24 h early.
+    """
+    service: str  # YYYYMMDD: the start_date of most trips
+    next: str = ""  # YYYYMMDD: the day after
+    late: frozenset[str] = field(default_factory=frozenset)  # trip_ids starting on next
+
+    def __contains__(self, key: tuple[str, str]) -> bool:
+        trip_id, start_date = key
+        return start_date == self.of(trip_id)
+
+    def of(self, trip_id: str) -> str:
+        return self.next if trip_id in self.late else self.service
+
+    def sql(self, trip: str = "trip_id", start: str = "start_date") -> tuple[str, list]:
+        """A filter for the pairs, and its parameters."""
+        late = sorted(self.late)
+        sql = (f"(({start} = ? AND NOT list_contains(?::VARCHAR[], {trip})) OR "
+               f"({start} = ? AND list_contains(?::VARCHAR[], {trip})))")
+        return sql, [self.service, late, self.next, late]
 
 
 def table_path(parsed: Path, feed: str, table: str, day: str) -> Path:
@@ -59,10 +88,10 @@ def _register_files(con, name: str, kept: list[tuple[str, int]]) -> None:
     con.register(name, pa.table({"file": [f for f, _ in kept]}))
 
 
-def trip_updates(con, trip_paths: list[Path], stop_paths: list[Path], start_date: str,
+def trip_updates(con, trip_paths: list[Path], stop_paths: list[Path], dates: StartDates,
                  alias: dict[str, str], stats: Counter
                  ) -> tuple[dict, set, set, dict]:
-    """TripUpdates evidence for trips with this start_date (YYYYMMDD), from the fresh
+    """TripUpdates evidence for the service date's runs (dates), from the fresh
     snapshots registered as fresh_tu.
 
     A trip listed twice in one snapshot with different contents is left out of that
@@ -70,13 +99,14 @@ def trip_updates(con, trip_paths: list[Path], stop_paths: list[Path], start_date
 
     Returns (tu_stops, seen, cancelled, trip_info), keyed by canonical trip.
     """
-    con.execute("""
+    wanted, params = dates.sql("t.trip_id", "t.start_date")
+    con.execute(f"""
         CREATE OR REPLACE TEMP TABLE ent AS
         SELECT t.file, t.entity_index, t.trip_id, t.route_id, t.vehicle_id,
                t.trip_schedule_relationship AS rel, epoch_ms(t.header_ts) // 1000 AS seen_at
         FROM read_parquet(?) t SEMI JOIN fresh_tu f ON t.file = f.file
-        WHERE t.start_date = ? AND t.trip_id IS NOT NULL
-    """, [_files(trip_paths), start_date])
+        WHERE t.trip_id IS NOT NULL AND {wanted}
+    """, [_files(trip_paths), *params])
 
     con.execute("""
         CREATE OR REPLACE TEMP TABLE dup AS
@@ -119,7 +149,7 @@ def trip_updates(con, trip_paths: list[Path], stop_paths: list[Path], start_date
                arg_max(vehicle_id, seen_at)
         FROM keep GROUP BY trip_id
     """).fetchall():
-        key = (alias.get(trip_id, trip_id), start_date)
+        key = (alias.get(trip_id, trip_id), dates.of(trip_id))
         seen.add(key)
         rels = [r for r in rels if r is not None]
         if {"CANCELED", "DELETED"} & set(rels):
@@ -142,7 +172,7 @@ def trip_updates(con, trip_paths: list[Path], stop_paths: list[Path], start_date
             stats["tu stop updates without stop_sequence"] += 1
             continue
         seen_at, time, rel = last["seen"], last["arr"], last["srel"]
-        stops = tu_stops.setdefault((alias.get(trip_id, trip_id), start_date), {})
+        stops = tu_stops.setdefault((alias.get(trip_id, trip_id), dates.of(trip_id)), {})
         old = stops.get(seq)
         if old is None or seen_at > old.seen_at:  # both copies of a twin listed: latest wins
             stops[seq] = TuStop(seen_at, time, rel == "SKIPPED")
@@ -151,11 +181,11 @@ def trip_updates(con, trip_paths: list[Path], stop_paths: list[Path], start_date
     return tu_stops, seen, cancelled, trip_info
 
 
-def vehicle_rows(con, paths: list[Path], start_date: str, stats: Counter) -> Iterator[tuple]:
+def vehicle_rows(con, paths: list[Path], dates: StartDates, stats: Counter) -> Iterator[tuple]:
     """VehiclePositions rows from the fresh snapshots registered as fresh_vp, grouped by
     vehicle in fetch order, streamed.
 
-    Only the vehicles that ran a trip with this start_date, and only from their first such
+    Only the vehicles that ran one of the service date's runs, and only from their first such
     report to LAST_STOP_SEARCH_S after their last: that is all the rule looks at, and it
     leaves out the next date's service on the second UTC day.
     """
@@ -164,25 +194,26 @@ def vehicle_rows(con, paths: list[Path], start_date: str, stats: Counter) -> Ite
         SELECT count(*) FROM read_parquet(?) v SEMI JOIN fresh_vp f ON v.file = f.file
         WHERE v.timestamp IS NULL
     """, [files]).fetchone()[0]
-    cur = con.execute("""
+    wanted, params = dates.sql()
+    cur = con.execute(f"""
         WITH v AS (
             SELECT v.*, epoch_ms(v.timestamp) // 1000 AS t
             FROM read_parquet(?) v SEMI JOIN fresh_vp f ON v.file = f.file
             WHERE v.timestamp IS NOT NULL AND v.vehicle_id IS NOT NULL
         ), spans AS (
             SELECT vehicle_id, min(t) AS first_t, max(t) + ? AS last_t
-            FROM v WHERE start_date = ? GROUP BY vehicle_id
+            FROM v WHERE {wanted} GROUP BY vehicle_id
         )
         SELECT v.vehicle_id, v.t, v.trip_id, v.start_date, v.current_stop_sequence,
                v.current_status = 'STOPPED_AT', v.latitude, v.longitude
         FROM v JOIN spans s ON v.vehicle_id = s.vehicle_id AND v.t BETWEEN s.first_t AND s.last_t
         ORDER BY v.vehicle_id, v.file, v.entity_index
-    """, [files, LAST_STOP_SEARCH_S, start_date])
+    """, [files, LAST_STOP_SEARCH_S, *params])
     while rows := cur.fetchmany(20_000):
         yield from rows
 
 
-def gather(con, parsed: Path, days: list[str], start_date: str,
+def gather(con, parsed: Path, days: list[str], dates: StartDates,
            gap_window: tuple[int, int], alias: dict[str, str],
            tu_feed: str = "trip_updates", vp_feed: str = "vehicle_positions",
            ) -> tuple[Evidence, dict, Counter]:
@@ -208,7 +239,7 @@ def gather(con, parsed: Path, days: list[str], start_date: str,
     )
     ev.tu_stops, ev.tu_seen, ev.cancelled, trip_info = trip_updates(
         con, paths(tu_feed, "trip_updates"), paths(tu_feed, "stop_time_updates"),
-        start_date, alias, stats)
-    rows = vehicle_rows(con, paths(vp_feed, "vehicle_positions"), start_date, stats)
+        dates, alias, stats)
+    rows = vehicle_rows(con, paths(vp_feed, "vehicle_positions"), dates, stats)
     ev.by_vehicle, ev.by_trip = clean_reports(rows, alias, stats)
     return ev, trip_info, stats

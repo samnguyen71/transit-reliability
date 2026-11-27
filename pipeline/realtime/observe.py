@@ -63,15 +63,21 @@ def pick_static_feed(conn, service_date: date) -> int | None:
 
 
 def load_schedule(conn, service_date: date, feed_id: int) -> Schedule:
+    # start_date: the local calendar date the trip starts on, which is what DRT's
+    # realtime sends (KNOWN_EXCEPTIONS.md): the service date, or the next day for a trip
+    # that starts at 24:00 or later.
     rows = conn.execute("""
         SELECT v.trip_id, v.route_id, v.direction_id, v.stop_sequence, v.stop_id,
                extract(epoch FROM v.arrival_at)::bigint,
                extract(epoch FROM v.departure_at)::bigint,
-               st.timepoint, s.stop_lat, s.stop_lon
+               st.timepoint, s.stop_lat, s.stop_lon,
+               to_char(min(coalesce(v.departure_at, v.arrival_at))
+                         OVER (PARTITION BY v.trip_id) AT TIME ZONE f.timezone, 'YYYYMMDD')
         FROM gtfs.scheduled_stop_visits(%(f)s, %(d)s) v
         JOIN gtfs.stop_times st
           ON st.feed_id = %(f)s AND st.trip_id = v.trip_id AND st.stop_sequence = v.stop_sequence
         JOIN gtfs.stops s ON s.feed_id = %(f)s AND s.stop_id = v.stop_id
+        JOIN gtfs.feed f ON f.feed_id = %(f)s
         ORDER BY v.trip_id, v.stop_sequence
     """, {"f": feed_id, "d": service_date}).fetchall()
     alias = dict(conn.execute(
@@ -82,20 +88,22 @@ def load_schedule(conn, service_date: date, feed_id: int) -> Schedule:
 
 def build_trips(rows: list[tuple], service_date: date) -> list[Trip]:
     """rows: (trip_id, route_id, direction_id, stop_sequence, stop_id, arrival, departure,
-    timepoint, lat, lon), ordered by trip and stop_sequence, times in POSIX seconds.
+    timepoint, lat, lon, start_date), ordered by trip and stop_sequence, times in POSIX
+    seconds. start_date (YYYYMMDD) is the trip's realtime start_date; None means the
+    service date (a trip with no times at all).
 
     A departure is scored at a timepoint and at the trip's first stop, if it has a
     scheduled time. A timepoint is timepoint 1. A blank counts as one (GTFS: times given
     are exact) only in a feed that marks no timepoints at all: DRT's 2026-10-12 zip left
     its non-timepoints blank, and the next zip marks exactly those stops 0.
     """
-    start_date = service_date.strftime("%Y%m%d")
+    service = service_date.strftime("%Y%m%d")
     blank_is_exact = all(r[7] is None for r in rows)
     trips: list[Trip] = []
     current = None
-    for trip_id, route_id, direction_id, seq, stop_id, arr, dep, tp, lat, lon in rows:
+    for trip_id, route_id, direction_id, seq, stop_id, arr, dep, tp, lat, lon, start in rows:
         if current is None or current.key[0] != trip_id:
-            current = Trip((trip_id, start_date), route_id, direction_id, [])
+            current = Trip((trip_id, start or service), route_id, direction_id, [])
             trips.append(current)
         first = not current.stops
         exact = tp == 1 or (tp is None and blank_is_exact)
@@ -128,14 +136,18 @@ def observe_date(con, parsed: Path, service_date: date, schedule: Schedule,
         raise FileNotFoundError(f"not parsed yet: {', '.join(str(p) for p in missing[:3])}"
                                 + (f" and {len(missing) - 3} more" if len(missing) > 3 else ""))
     days = [service_date.isoformat(), (service_date + timedelta(days=1)).isoformat()]
-    start_date = service_date.strftime("%Y%m%d")
+    service = service_date.strftime("%Y%m%d")
+    dates = evidence.StartDates(
+        service, (service_date + timedelta(days=1)).strftime("%Y%m%d"),
+        frozenset(t.key[0] for t in schedule.trips if t.key[1] != service))
     gap_window = (_epoch(service_date), _epoch(service_date + timedelta(days=2)))
 
-    ev, trip_info, stats = evidence.gather(con, parsed, days, start_date, gap_window,
+    ev, trip_info, stats = evidence.gather(con, parsed, days, dates, gap_window,
                                            schedule.alias, tu_feed, vp_feed)
     stats["trips"] = len(schedule.trips)
+    stats["trips starting after midnight"] = len(dates.late)
     scheduled = {trip.key for trip in schedule.trips}
-    unscheduled = _unscheduled(ev, trip_info, scheduled, start_date)
+    unscheduled = _unscheduled(ev, trip_info, scheduled, dates)
     tables = {
         "visits": _visits_table(service_date, schedule.trips, ev),
         "gaps": _gaps_table([(tu_feed, g) for g in ev.tu_gaps] + [(vp_feed, g) for g in ev.vp_gaps]),
@@ -187,8 +199,9 @@ def _gaps_table(gaps: list[tuple[str, tuple[int, int]]]) -> pa.Table:
     }, schema=OBSERVED_TABLES["gaps"])
 
 
-def _unscheduled(ev: Evidence, trip_info: dict, scheduled: set, start_date: str) -> list[dict]:
-    keys = {k for k in ev.tu_seen | set(ev.by_trip) if k[1] == start_date} - scheduled
+def _unscheduled(ev: Evidence, trip_info: dict, scheduled: set,
+                 dates: evidence.StartDates) -> list[dict]:
+    keys = {k for k in ev.tu_seen | set(ev.by_trip) if k in dates} - scheduled
     out = []
     for key in sorted(keys):
         info = trip_info.get(key[0], {})
