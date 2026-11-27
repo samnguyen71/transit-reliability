@@ -37,15 +37,19 @@ Once, on the VM:
 
 1. **Open ports 80 and 443.** In the Azure portal: the VM → Networking → add inbound
    port rules for TCP 80 and TCP 443 (and UDP 443 for HTTP/3).
-2. **Optional: a domain name, for HTTPS.** The VM's public IP → Configuration → DNS
-   name label gives you `<label>.<region>.cloudapp.azure.com` for free. Make the IP
-   static on the same page, or the name stops working when the IP changes. Then add it
-   to `.env`:
+2. **Optional: a domain name, for HTTPS.** Azure gives one for free. The VM → Overview
+   → "DNS name" (it says "Not configured" until you set one) → type a label such as
+   `drt-reliability` → Save. Make the IP static on the same page, or the name stops
+   working when the IP changes. Then copy the **whole** DNS name from the Overview page,
+   label included, into `.env`:
 
-       SITE_ADDRESS=<label>.<region>.cloudapp.azure.com
+       SITE_ADDRESS=drt-reliability.northcentralus.cloudapp.azure.com
 
-   Caddy gets a Let's Encrypt certificate the first time it starts, and sends HTTP to
-   HTTPS. Without `SITE_ADDRESS` the API is plain HTTP on port 80.
+   Check it resolves to the VM before starting Caddy: `getent hosts` followed by the
+   name. Caddy gets a Let's Encrypt certificate the first time it starts, and sends HTTP
+   to HTTPS. Without `SITE_ADDRESS` the API is plain HTTP on port 80. If `docker compose
+   ps proxy` says `Restarting`, `docker compose logs --tail 20 proxy` says why: "does not
+   qualify for certificate" means the name in `.env` is incomplete.
 3. **Start it.** `POSTGRES_PASSWORD` in `.env` must be URL-safe, as for the nightly job.
 
        git pull
