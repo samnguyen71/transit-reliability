@@ -2,44 +2,15 @@
 
 from datetime import date
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
+from rollup_files import hist, row, write
 
 from transit_api import rollups
 from transit_api.main import create_app
 from transit_api.models import Route
 from transit_api.routers import routes
 from transit_api.settings import Settings
-
-COUNTS = {c: pa.int32() for c in rollups.COUNTS}
-BY_ROUTE = pa.schema([("service_date", pa.date32()), ("route_id", pa.string()),
-                      ("direction_id", pa.int32()), ("kind", pa.string()),
-                      *COUNTS.items(), ("median_delay_s", pa.int32()),
-                      ("p90_delay_s", pa.int32()),
-                      ("delay_hist", pa.list_(pa.int32(), rollups.HIST_BINS))])
-
-
-def hist(**bins: int) -> list[int]:
-    """A delay_hist from {"b<i>": count}; b6 is [0, 60) s late, b16 is [600, 660)."""
-    h = [0] * rollups.HIST_BINS
-    for k, v in bins.items():
-        h[int(k[1:])] = v
-    return h
-
-
-def row(d, route="R1", direction=0, kind="timepoint", h=None, **counts):
-    h = h or [0] * rollups.HIST_BINS
-    base = dict.fromkeys(rollups.COUNTS, 0) | {"observed": sum(h), "scheduled": sum(h)} | counts
-    return {"service_date": d, "route_id": route, "direction_id": direction, "kind": kind,
-            **base, "median_delay_s": None, "p90_delay_s": None, "delay_hist": h}
-
-
-def write(data_dir, d: date, rows):
-    path = data_dir / "rollups" / "by_route" / f"{d}.parquet"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pylist(rows, schema=BY_ROUTE), path)
 
 
 @pytest.fixture

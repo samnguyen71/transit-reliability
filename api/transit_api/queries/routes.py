@@ -111,3 +111,22 @@ def shapes(conn: psycopg.Connection, feed_id: int,
     for shape_id, lon, lat in rows:
         out[shape_id].append((lon, lat))
     return out
+
+
+def routes_by_id(conn: psycopg.Connection, route_ids: list[str]) -> dict[str, dict]:
+    """Each route as the newest static feed that has it names it. For reliability, which
+    spans feeds; ids in no feed are left out."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        rows = cur.execute(f"""
+            SELECT DISTINCT ON (r.route_id) {ROUTE_COLS}
+            FROM gtfs.routes r JOIN gtfs.feed f USING (feed_id)
+            WHERE r.route_id = ANY(%s)
+            ORDER BY r.route_id, f.fetched_at DESC
+        """, [route_ids]).fetchall()
+    return {r["route_id"]: r for r in rows}
+
+
+def route_sort_key(route: dict) -> tuple:
+    """ROUTE_ORDER, in Python."""
+    name = route.get("short_name") or ""
+    return (not name.isdigit(), len(name), name, route["route_id"])

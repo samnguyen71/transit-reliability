@@ -79,3 +79,13 @@ def stop_routes(conn: psycopg.Connection, feed_id: int, stop_id: str, day: date)
         """, {"feed": feed_id, "stop": stop_id, "day": day}).fetchall()
     route_keys = ("route_id", "short_name", "long_name", "color")
     return [{"route": {k: r.pop(k) for k in route_keys}, **r} for r in rows]
+
+
+def get_stop_any_feed(conn: psycopg.Connection, stop_id: str) -> dict | None:
+    """The stop as the newest static feed that has it. For reliability, which spans feeds."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        return cur.execute(f"""
+            SELECT {STOP_COLS} FROM gtfs.stops s JOIN gtfs.feed f USING (feed_id)
+            WHERE s.stop_id = %s
+            ORDER BY f.fetched_at DESC LIMIT 1
+        """, [stop_id]).fetchone()

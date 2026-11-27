@@ -1,5 +1,6 @@
 """Settings, read from the environment. Every one has a default except DATABASE_URL."""
 
+from datetime import date
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
@@ -19,3 +20,13 @@ class Settings(BaseSettings):
     # Postgres, the logger and the nightly job.
     duckdb_memory_limit: str = "64MB"
     duckdb_threads: int = 1
+    # MIN_DAY_COVERAGE: service dates whose network-wide coverage (observed / visits that
+    # ran) is under this are left out of every reliability answer, and listed as excluded.
+    # A normal day is 0.89-0.97; the 11-15..11-17 DRT outage gave 0.02, 0.00 and 0.65.
+    min_day_coverage: float = 0.75
+    # HOLIDAYS: dates that ran weekend service, as JSON: '["2026-10-12", "2026-12-25"]'.
+    holidays: frozenset[date] = frozenset({date(2026, 10, 12)})  # Thanksgiving
+    # ROLLUP_RESCAN_S: how often to look for new rollup files (the nightly job's output).
+    rollup_rescan_s: float = 10
+    # ROLLUP_CACHE_SIZE: reliability answers kept per rollup version.
+    rollup_cache_size: int = 256

@@ -14,7 +14,7 @@ import duckdb
 from fastapi import FastAPI
 
 from transit_api import rollups
-from transit_api.routers import routes, stops
+from transit_api.routers import health, reliability, routes, stops
 from transit_api.settings import Settings
 
 
@@ -26,8 +26,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # One in-memory DuckDB for the app; requests use cursors on it (deps.get_duck).
         con = duckdb.connect(config={"memory_limit": settings.duckdb_memory_limit,
                                      "threads": settings.duckdb_threads})
-        rollups.setup(con)
         app.state.duck = con
+        app.state.rollups = rollups.RollupStore(
+            con, settings.data_dir, min_day_coverage=settings.min_day_coverage,
+            holidays=settings.holidays, rescan_s=settings.rollup_rescan_s,
+            cache_size=settings.rollup_cache_size)
         yield
         con.close()
 
@@ -35,10 +38,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.include_router(routes.router)
     app.include_router(stops.router)
-
-    @app.get("/health", include_in_schema=False)
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
+    app.include_router(reliability.router)
+    app.include_router(health.router)
 
     return app
 
