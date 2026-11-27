@@ -17,6 +17,19 @@ ROUTE_ORDER = """r.route_short_name !~ '^[0-9]+$', length(r.route_short_name),
 LOOKAHEAD_DAYS = 7  # a whole week, so a weekday-only route is found on a Saturday
 
 
+def marks_timepoints(feed: str) -> str:
+    """SQL, true if the feed (an SQL expression) marks any stop_times.timepoint. Where it
+    marks none, a blank means exact times, so a timepoint (observe.py's rule).
+
+    Not EXISTS: the planner assumes a feed's rows are spread evenly through stop_times and
+    seq-scans, and a synchronized seq scan starts wherever the last one stopped, so it
+    found the first row at once, or after reading 62 MB of other feeds (200 ms warm,
+    seconds cold). ORDER BY the primary key makes it an index scan of a few pages."""
+    return f"""((SELECT x.timepoint FROM gtfs.stop_times x
+                 WHERE x.feed_id = {feed} AND x.timepoint IS NOT NULL
+                 ORDER BY x.feed_id, x.trip_id, x.stop_sequence LIMIT 1) IS NOT NULL)"""
+
+
 def list_routes(conn: psycopg.Connection, feed_id: int) -> list[dict]:
     with conn.cursor(row_factory=dict_row) as cur:
         return cur.execute(f"""
@@ -82,12 +95,9 @@ def trip_stops(conn: psycopg.Connection, feed_id: int,
     """Each trip's stops in order, as PatternStop dicts."""
     out: dict[str, list[dict]] = {t: [] for t in trip_ids}
     with conn.cursor(row_factory=dict_row) as cur:
-        rows = cur.execute("""
+        rows = cur.execute(f"""
             SELECT st.trip_id, st.stop_sequence,
-                   coalesce(st.timepoint = 1,
-                            NOT EXISTS (SELECT 1 FROM gtfs.stop_times x
-                                        WHERE x.feed_id = %(feed)s AND x.timepoint IS NOT NULL)
-                   ) AS timepoint,
+                   coalesce(st.timepoint = 1, NOT {marks_timepoints("%(feed)s")}) AS timepoint,
                    s.stop_id, s.stop_name, s.stop_lat, s.stop_lon, s.parent_station, s.stop_code
             FROM gtfs.stop_times st
             JOIN gtfs.stops s ON s.feed_id = st.feed_id AND s.stop_id = st.stop_id
