@@ -1,21 +1,33 @@
-"""Bus stops: /stops/... The static endpoints use the feed covering today
-(deps.get_feed); reliability spans feeds, so it names the stop from the newest one."""
+"""Bus stops: /stops/... The static endpoints and live departures use the feed covering
+today (deps.get_feed); reliability spans feeds, so it names the stop from the newest one."""
 
+from datetime import timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 
-from transit_api import window
-from transit_api.deps import DbDep, DuckDep, FeedDep, RollupsDep, StoreDep, TodayDep
+from transit_api import board, live, window
+from transit_api.deps import (
+    DbDep,
+    DuckDep,
+    FeedDep,
+    LiveDep,
+    NowDep,
+    RollupsDep,
+    SettingsDep,
+    StoreDep,
+    TodayDep,
+)
 from transit_api.models import (
     Reliability,
     Route,
     RouteKinds,
+    StopDepartures,
     StopDetail,
     StopReliability,
     StopSearchResponse,
 )
-from transit_api.queries import routes, stops
+from transit_api.queries import departures, routes, stops
 
 router = APIRouter(prefix="/stops", tags=["stops"])
 
@@ -42,6 +54,34 @@ def get_stop(stop_id: str, conn: DbDep, feed_id: FeedDep, today: TodayDep) -> St
         raise HTTPException(404, f"no stop {stop_id!r} in the current static feed")
     return StopDetail(**stop, service_date=today,
                       routes=stops.stop_routes(conn, feed_id, stop_id, today))
+
+
+@router.get("/{stop_id}/departures")
+def stop_departures(
+        stop_id: str, response: Response, conn: DbDep, feed_id: FeedDep, live_feed: LiveDep,
+        settings: SettingsDep, now: NowDep, today: TodayDep,
+        limit: Annotated[int, Query(ge=1, le=30)] = 10,
+        horizon_min: Annotated[int, Query(
+            ge=15, le=180, description="minutes ahead; past about 60, most departures are "
+                                       "scheduled only (trips enter the feed 60 min ahead)")
+        ] = 90) -> StopDepartures:
+    """The next departures from the stop: scheduled times, with the live feed's
+    predictions, cancellations and skipped stops. Not cached: poll it."""
+    stop = stops.get_stop(conn, feed_id, stop_id)
+    if stop is None:
+        raise HTTPException(404, f"no stop {stop_id!r} in the current static feed")
+    snap = live_feed.snapshot()
+    rt = live.status(snap, now, settings.live_stale_s)
+    horizon = timedelta(minutes=horizon_min)
+    # Yesterday: its trips after 24:00 run tonight. Tomorrow: a late-evening window
+    # reaches its first overnight runs.
+    days = [today - timedelta(days=1), today, today + timedelta(days=1)]
+    rows = departures.scheduled(conn, stop_id, days, now - board.LOOKBACK,
+                                now + horizon + board.EARLY_MARGIN)
+    response.headers["Cache-Control"] = "no-store"
+    return StopDepartures(
+        stop=stop, now=now, horizon_min=horizon_min, realtime=rt,
+        departures=board.merge(rows, snap, rt["status"] == "ok", now, horizon)[:limit])
 
 
 @router.get("/{stop_id}/reliability")

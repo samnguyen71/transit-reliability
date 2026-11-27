@@ -49,7 +49,7 @@ python findings.py ../data ../data/raw/static_gtfs/<date>/<newest>.zip \
 | --- | --- |
 | [`logger/`](logger/README.md) | Polls the live feeds every 30 s and archives every snapshot. Running now. |
 | `pipeline/` | Phase 1: turns snapshots into a delay for every stop visit |
-| `api/`, `web/` | Phase 2: the FastAPI backend and React map |
+| [`api/`](api/README.md), `web/` | Phase 2: the FastAPI backend and React map |
 | `data/` | The collected data, on the VM only (not in git) |
 
 Start with [logger/README.md](logger/README.md).

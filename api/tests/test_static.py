@@ -3,11 +3,13 @@
 
 from datetime import date
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
 from transit_api import deps
 from transit_api.main import create_app
+from transit_api.queries.routes import marks_timepoints
 from transit_api.settings import Settings
 
 TODAY = date(2026, 11, 25)
@@ -133,3 +135,11 @@ def test_route_not_found(api):
 def test_no_feed_for_today(api):
     api.app.dependency_overrides[deps.get_today] = lambda: date(2030, 1, 1)
     assert api.get("/routes").status_code == 503
+
+
+def test_marks_timepoints(static_dsn):
+    with psycopg.connect(static_dsn) as conn:
+        feeds = dict(conn.execute("SELECT sha256, feed_id FROM gtfs.feed").fetchall())
+        sql = f"SELECT {marks_timepoints('%s')}"
+        assert conn.execute(sql, [feeds["current"]]).fetchone()[0] is True
+        assert conn.execute(sql, [feeds["old"]]).fetchone()[0] is False  # no stop_times

@@ -3,14 +3,16 @@
 import psycopg
 from fastapi import APIRouter
 
-from transit_api.deps import SettingsDep, StoreDep, TodayDep
-from transit_api.models import ExcludedDay, Health, RollupStatus
+from transit_api import live
+from transit_api.deps import LiveDep, NowDep, SettingsDep, StoreDep, TodayDep
+from transit_api.models import ExcludedDay, Health, RealtimeStatus, RollupStatus
 
 router = APIRouter()
 
 
 @router.get("/health", include_in_schema=False)
-def health(settings: SettingsDep, store: StoreDep, today: TodayDep) -> Health:
+def health(settings: SettingsDep, store: StoreDep, today: TodayDep, live_feed: LiveDep,
+           now: NowDep) -> Health:
     snap = store.snapshot()
     dates = snap.dates()
     rollups = RollupStatus(
@@ -32,4 +34,6 @@ def health(settings: SettingsDep, store: StoreDep, today: TodayDep) -> Health:
         except psycopg.Error:
             database = "error"
     status = "ok" if snap.version and database != "error" else "degraded"
-    return Health(status=status, database=database, static_feed_id=feed_id, rollups=rollups)
+    realtime = RealtimeStatus(**live.status(live_feed.snapshot(), now, settings.live_stale_s))
+    return Health(status=status, database=database, static_feed_id=feed_id, rollups=rollups,
+                  realtime=realtime)

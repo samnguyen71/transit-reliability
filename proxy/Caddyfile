@@ -1,0 +1,11 @@
+# The public entry point: Caddy in front of the API (docker-compose.yml, "proxy").
+#
+# SITE_ADDRESS, from .env:
+#   a domain name that points at the VM   HTTPS, with a Let's Encrypt certificate that
+#                                         Caddy gets and renews (needs ports 80 and 443)
+#   unset                                 plain HTTP on port 80, for any host name
+{$SITE_ADDRESS}
+
+# Compression makes the API's ETags weak (W/"..."); deps.get_rollups accepts those.
+encode zstd gzip
+reverse_proxy api:8000

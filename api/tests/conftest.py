@@ -46,7 +46,12 @@ TRIPS = [  # trip_id, route, service, direction, headsign, shape, [(stop, dep_se
                                            ("1", 10 * H + 1200, 1)]),
     ("t8", "101", "WK", 0, None, None, [("2", 12 * H, 1), ("3", 12 * H + 300, 1)]),
     ("t6", "N1", "WE", 0, "Night", None, [("1", 1 * H, 1), ("5", 1 * H + 600, 1)]),
+    # Starts at 24:30, so it runs at 00:30 the next day and DRT sends that day as its
+    # start_date. Its service, LT, runs only on Tuesday 2026-12-01 (calendar_dates), so
+    # the static endpoints' dates never see it.
+    ("t9", "10", "LT", 0, "Late", None, [("1", 24 * H + 1800, 1), ("2", 24 * H + 2400, 1)]),
 ]
+CALENDAR_DATES = [("LT", "2026-12-01", 1)]  # service_id, date, exception_type
 # +24 h copies, as DRT ships in Overnight; gtfs.mark_overnight_twins records them.
 TWINS = {"t3": "t1", "t7": "t6"}
 SHAPES = {"S0": [(1, -78.90, 43.90), (2, -78.91, 43.91), (3, -78.92, 43.92)],
@@ -100,6 +105,8 @@ def load(conn: psycopg.Connection) -> None:
         cur.executemany("INSERT INTO gtfs.stops (feed_id, stop_id, stop_name, stop_lat, stop_lon, "
                         "stop_code) VALUES (%s, %s, %s, 43.9, -78.9, %s)",
                         [(f, *s) for s in STOPS])
+        cur.executemany("INSERT INTO gtfs.calendar_dates VALUES (%s, %s, %s, %s)",
+                        [(f, *c) for c in CALENDAR_DATES])
         cur.executemany("INSERT INTO gtfs.shapes VALUES (%s, %s, %s, %s, %s, NULL)",
                         [(f, sid, lat, lon, seq) for sid, pts in SHAPES.items()
                          for seq, lon, lat in reversed(pts)])

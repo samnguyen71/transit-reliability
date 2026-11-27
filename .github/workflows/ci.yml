@@ -30,3 +30,45 @@ jobs:
         run: docker build -t feedlogger ./logger
       - name: Check it starts
         run: docker run --rm feedlogger --help
+
+  api-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    # The static and departures tests need a real PostgreSQL (they skip without
+    # DATABASE_URL); they make and drop their own scratch database on it.
+    services:
+      postgres:
+        image: postgres:16-alpine  # as on the VM (docker-compose.yml)
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Lint
+        run: ruff check .
+      - name: Test
+        run: pytest -q -rs  # -rs lists skipped tests, so a lost database shows up
+
+  api-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the Docker image
+        run: docker build -t transit-api ./api
+      - name: Check the app imports
+        run: docker run --rm transit-api python -c "import transit_api.main"
