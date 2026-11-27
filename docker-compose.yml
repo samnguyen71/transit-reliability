@@ -30,6 +30,57 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data  # survives `docker compose down` and rebuilds
 
+  api:
+    build: ./api
+    restart: unless-stopped
+    depends_on: [db]  # not waited for: the API answers 503 until the database is up
+    environment:
+      DATA_DIR: /data
+      # The db service by name, on Compose's network. Not DATABASE_URL from .env, which
+      # is the nightly job's (127.0.0.1, outside Docker). POSTGRES_PASSWORD must be URL-safe.
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres
+      # Trust X-Forwarded-For/-Proto from any address: only Caddy and the VM itself can
+      # reach port 8000 (below). Without it, redirects would say http:// behind HTTPS.
+      FORWARDED_ALLOW_IPS: "*"
+    volumes:
+      - ./data:/data:ro  # rollups/ from the nightly job, raw/ from the logger
+    ports:
+      # For curl and SSH tunnels on the VM; the public goes through Caddy. Docker's
+      # published ports bypass ufw, so never drop the 127.0.0.1.
+      - "127.0.0.1:8000:8000"
+    mem_limit: 300m  # about 105 MiB in use with a month of rollups
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [api]
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}  # set in .env; see proxy/Caddyfile
+    ports:
+      # Public on purpose. These bypass ufw too: Azure's network security group is
+      # what opens or closes them.
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    volumes:
+      - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data  # certificates; keep them, or Let's Encrypt rate limits bite
+      - caddy_config:/config
+    mem_limit: 100m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:
 
