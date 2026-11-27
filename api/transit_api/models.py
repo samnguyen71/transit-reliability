@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 
 from transit_api.rollups import DayType
 
@@ -102,12 +102,28 @@ class RollupStatus(BaseModel):
     scanned_at: datetime
 
 
+class RealtimeStatus(BaseModel):
+    """The TripUpdates snapshot live departures use."""
+    status: Literal["ok", "stale", "empty", "missing"] = Field(
+        description="ok: its predictions are used. stale: its feed timestamp is older than "
+                    "LIVE_STALE_S (a frozen feed, a DRT outage or a stopped logger). empty: "
+                    "no entities (DRT serves these around its 03:00 changeover). missing: "
+                    "no snapshot file. Unless ok, departures are scheduled times only.")
+    file: str | None = Field(description="the logger's snapshot file")
+    feed_timestamp: AwareDatetime | None = Field(description="the feed's header timestamp")
+    age_s: int | None = Field(description="now - feed_timestamp; normally about 20 s")
+    trips: int = Field(description="trips in the snapshot")
+
+
 class Health(BaseModel):
     status: Literal["ok", "degraded"] = Field(description="degraded: no rollups, or the "
-                                                          "database is set but unreachable")
+                                                          "database is set but unreachable "
+                                                          "(realtime doesn't count: DRT's "
+                                                          "own gaps would flap it)")
     database: Literal["ok", "unset", "error"]
     static_feed_id: int | None = Field(description="the feed covering today")
     rollups: RollupStatus
+    realtime: RealtimeStatus
 
 
 class Stop(BaseModel):
@@ -171,3 +187,41 @@ class StopReliability(Window):
     all_routes: list[Reliability] = Field(description="every route at the stop together, "
                                                       "by kind")
     routes: list[RouteKinds]
+
+
+DepartureStatus = Literal["live", "not_started", "scheduled", "no_realtime", "cancelled",
+                          "skipped"]
+
+
+class Departure(BaseModel):
+    trip_id: str = Field(description="the static trip_id (an overnight run's early copy)")
+    service_date: date
+    route: Route
+    direction_id: int | None
+    headsign: str | None
+    scheduled: AwareDatetime
+    predicted: AwareDatetime | None = Field(description="the feed's time, for live and "
+                                                        "not_started; otherwise null")
+    delay_s: int | None = Field(description="predicted - scheduled")
+    status: DepartureStatus = Field(
+        description="live: the trip is under way; predicted is the feed's time. "
+                    "not_started: a prediction made before the trip's first departure "
+                    "(69% equal the schedule; the rest carry a late bus from its previous "
+                    "trip). scheduled: no prediction expected (trips enter the feed 60 min "
+                    "before they start), or the feed isn't usable (see realtime). "
+                    "no_realtime: the trip starts within the hour but the feed has nothing "
+                    "for this stop. cancelled, skipped: as the feed says; scheduled is the "
+                    "departure that won't run.")
+    vehicle_id: str | None
+    timepoint: bool = Field(description="timepoint 1, or blank in a feed that marks no "
+                                        "timepoints (observe.py's rule)")
+
+
+class StopDepartures(BaseModel):
+    stop: Stop
+    now: AwareDatetime
+    horizon_min: int
+    realtime: RealtimeStatus
+    departures: list[Departure] = Field(
+        description="by predicted time, else scheduled, from a minute ago to horizon_min "
+                    "ahead. Not departures at a trip's last stop.")

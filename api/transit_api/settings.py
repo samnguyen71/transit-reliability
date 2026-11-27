@@ -30,3 +30,20 @@ class Settings(BaseSettings):
     rollup_rescan_s: float = 10
     # ROLLUP_CACHE_SIZE: reliability answers kept per rollup version.
     rollup_cache_size: int = 256
+    # RAW_DIR: the logger's snapshots (raw/trip_updates/<UTC day>/*.pb.gz), for live
+    # departures. Default DATA_DIR/raw, as on the VM, where the API runs next to the logger.
+    raw_dir: Path | None = None
+    # LIVE_RESCAN_S: how often to look for a newer TripUpdates snapshot. The logger saves
+    # one every 30 s when the feed changes.
+    live_rescan_s: float = 5
+    # LIVE_STALE_S: a snapshot whose feed timestamp is older than this isn't used. Normal
+    # age is about 20 s; frozen feeds (77 min on 2026-10-20) are what this catches.
+    live_stale_s: float = 120
+    # DB_POOL_SIZE, DB_POOL_TIMEOUT_S: Postgres connections kept open, and how long a
+    # request waits for one before a 503. Opening one per request cost about 50 ms.
+    db_pool_size: int = 4
+    db_pool_timeout_s: float = 5
+
+    @property
+    def raw_path(self) -> Path:
+        return self.raw_dir or self.data_dir / "raw"
