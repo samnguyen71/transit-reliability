@@ -6,6 +6,7 @@
 #   unset                                 plain HTTP on port 80, for any host name
 {$SITE_ADDRESS}
 
-# Compression makes the API's ETags weak (W/"..."); deps.get_rollups accepts those.
+# Compression adds a suffix to the API's ETags ("<version>-gzip") and strips it from
+# If-None-Match on the way in, so 304s still work (checked 2026-11-27).
 encode zstd gzip
 reverse_proxy api:8000
