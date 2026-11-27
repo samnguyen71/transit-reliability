@@ -120,3 +120,20 @@ SELECT CASE
          (split_part(val, ':', 3)::integer)
 END;
 $$ LANGUAGE sql IMMUTABLE;
+
+-- The newest feed with any service on p_date.
+CREATE OR REPLACE FUNCTION gtfs.feed_for(p_date date) RETURNS int LANGUAGE sql STABLE AS $$
+  SELECT f.feed_id FROM gtfs.feed f
+  WHERE EXISTS (SELECT 1 FROM gtfs.active_services(f.feed_id, p_date))
+  ORDER BY f.fetched_at DESC LIMIT 1
+$$;
+
+-- Trips that run on p_date, without the +24 h overnight copies.
+CREATE OR REPLACE FUNCTION gtfs.trips_on(p_feed int, p_date date)
+RETURNS SETOF gtfs.trips LANGUAGE sql STABLE AS $$
+  SELECT t.* FROM gtfs.trips t
+  JOIN gtfs.active_services(p_feed, p_date) s USING (service_id)
+  WHERE t.feed_id = p_feed
+    AND NOT EXISTS (SELECT 1 FROM gtfs.trip_alias a
+                    WHERE a.feed_id = t.feed_id AND a.trip_id = t.trip_id)
+$$;

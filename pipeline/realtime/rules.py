@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from itertools import pairwise
 
-RULE_VERSION = "3"
+RULE_VERSION = "4"
 
 AGREE_S = 60              # TU time accepted if inside the VP departure bracket ±60 s
 NEAR_M = 100.0            # "at the last stop" by position

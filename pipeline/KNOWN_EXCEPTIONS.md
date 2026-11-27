@@ -42,6 +42,9 @@ different `trip_id` and `block_id`. One example is `7718__491905…` at 01:15 an
 
 - Realtime matching (Phase 2) should score a trip as
   `gtfs.canonical_trip_id(feed_id, rt.trip_id)` on `rt.start_date` unchanged.
+- The same calendar-date rule applies to every trip, not just the twins. A trip starting
+  at 24:00 or later on service date D comes with `start_date` D+1, so observe expects
+  that (rule v4, OBSERVED_TIMES.md "Trip instance").
 
 **Consequences for scoring.**
 

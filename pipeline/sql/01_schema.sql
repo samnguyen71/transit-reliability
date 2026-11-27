@@ -1,5 +1,7 @@
 CREATE SCHEMA IF NOT EXISTS gtfs;
 
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 CREATE TABLE IF NOT EXISTS gtfs.feed (
   feed_id    serial PRIMARY KEY,
   sha256     text NOT NULL UNIQUE,     -- loading the same zip twice does nothing
@@ -90,6 +92,7 @@ CREATE TABLE IF NOT EXISTS gtfs.trip_alias (
 CREATE INDEX IF NOT EXISTS trips_service_idx ON gtfs.trips (feed_id, service_id);        -- date → trips
 CREATE INDEX IF NOT EXISTS calendar_dates_date_idx ON gtfs.calendar_dates (feed_id, date); -- exceptions on a date
 CREATE INDEX IF NOT EXISTS stop_times_stop_idx ON gtfs.stop_times (feed_id, stop_id);    -- visits at a stop (Phase 2)
+CREATE INDEX IF NOT EXISTS stops_name_trgm_idx ON gtfs.stops USING GIN (lower(stop_name) gin_trgm_ops);
 ALTER TABLE gtfs.routes ADD COLUMN IF NOT EXISTS route_color char(6);
 ALTER TABLE gtfs.stops  ADD COLUMN IF NOT EXISTS stop_code text;
 ALTER TABLE gtfs.trips  ADD COLUMN IF NOT EXISTS trip_headsign text;
